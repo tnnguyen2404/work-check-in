@@ -1,16 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Clock, LogIn, LogOut, User } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-
-interface CheckInRecord {
-  id: string;
-  employeeName: string;
-  checkInTime: Date;
-  checkOutTime?: Date;
-}
+import { getAllRecords, saveRecord, CheckInRecord } from "@/localDb/checkins";
+import { calculateWorkedMinutes } from "@/lib/time";
 
 const CheckInCard = () => {
   const [employeeName, setEmployeeName] = useState("");
@@ -18,7 +13,19 @@ const CheckInCard = () => {
   const [history, setHistory] = useState<CheckInRecord[]>([]);
   const { toast } = useToast();
 
-  const handleCheckIn = () => {
+  // Load records from IndexedDB on mount
+  useEffect(() => {
+    const loadRecords = async () => {
+      const records = await getAllRecords();
+      const active = records.filter((r) => !r.checkOutTime);
+      const completed = records.filter((r) => r.checkOutTime);
+      setActiveCheckIns(active);
+      setHistory(completed.reverse());
+    };
+    loadRecords();
+  }, []);
+
+  const handleCheckIn = async () => {
     if (!employeeName.trim()) {
       toast({
         title: "Name required",
@@ -28,7 +35,6 @@ const CheckInCard = () => {
       return;
     }
 
-    // Check if employee is already checked in
     const alreadyCheckedIn = activeCheckIns.some(
       (record) =>
         record.employeeName.toLowerCase() === employeeName.trim().toLowerCase()
@@ -46,32 +52,51 @@ const CheckInCard = () => {
     const newRecord: CheckInRecord = {
       id: Date.now().toString(),
       employeeName: employeeName.trim(),
-      checkInTime: new Date(),
+      checkInTime: new Date().toISOString(),
+      synced: false,
     };
 
+    await saveRecord(newRecord);
     setActiveCheckIns((prev) => [...prev, newRecord]);
     setEmployeeName("");
   };
 
-  const handleCheckOut = (recordId: string) => {
+  const handleCheckOut = async (recordId: string) => {
     const record = activeCheckIns.find((r) => r.id === recordId);
     if (record) {
-      const completedRecord = {
+      const checkOutTime = new Date().toISOString();
+      const workedTime = calculateWorkedMinutes(
+        record.checkInTime,
+        checkOutTime
+      );
+
+      const completedRecord: CheckInRecord = {
         ...record,
-        checkOutTime: new Date(),
+        checkOutTime,
+        workedTime,
       };
 
+      await saveRecord(completedRecord);
       setActiveCheckIns((prev) => prev.filter((r) => r.id !== recordId));
       setHistory((prev) => [completedRecord, ...prev]);
     }
   };
 
-  const formatTime = (date: Date) => {
-    return date.toLocaleTimeString("en-US", {
+  const formatTime = (isoString: string) => {
+    return new Date(isoString).toLocaleTimeString("en-US", {
       hour: "2-digit",
       minute: "2-digit",
       hour12: true,
     });
+  };
+
+  const formatWorkedTime = (minutes: number) => {
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    if (hours > 0) {
+      return `${hours}h ${mins}m`;
+    }
+    return `${mins}m`;
   };
 
   return (
@@ -173,7 +198,9 @@ const CheckInCard = () => {
                     </p>
                   </div>
                   <span className="text-xs font-medium px-2 py-1 rounded-full bg-success/10 text-success">
-                    Complete
+                    {record.workedTime !== undefined
+                      ? formatWorkedTime(record.workedTime)
+                      : "Complete"}
                   </span>
                 </div>
               ))}
