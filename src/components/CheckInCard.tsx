@@ -2,18 +2,15 @@ import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Clock, LogIn, LogOut, User } from "lucide-react";
+import { Clock, LogIn, User } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { getAllRecords, saveRecord, CheckInRecord } from "@/localDb/checkins";
 import { calculateWorkedMinutes } from "@/lib/time";
-
-const BLOCK_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
 const CheckInCard = () => {
   const [employeeName, setEmployeeName] = useState("");
   const [activeCheckIns, setActiveCheckIns] = useState<CheckInRecord[]>([]);
   const [history, setHistory] = useState<CheckInRecord[]>([]);
-  const [blockedUsers, setBlockedUsers] = useState<Map<string, number>>(new Map());
   const { toast } = useToast();
 
   // Load records from IndexedDB on mount
@@ -28,41 +25,6 @@ const CheckInCard = () => {
     loadRecords();
   }, []);
 
-  // Check if user is blocked
-  const isUserBlocked = (name: string): boolean => {
-    const normalizedName = name.trim().toLowerCase();
-    const blockedUntil = blockedUsers.get(normalizedName);
-    if (!blockedUntil) return false;
-    if (Date.now() >= blockedUntil) {
-      // Block expired, remove it
-      setBlockedUsers((prev) => {
-        const newMap = new Map(prev);
-        newMap.delete(normalizedName);
-        return newMap;
-      });
-      return false;
-    }
-    return true;
-  };
-
-  // Get remaining block time in minutes
-  const getBlockTimeRemaining = (name: string): number => {
-    const normalizedName = name.trim().toLowerCase();
-    const blockedUntil = blockedUsers.get(normalizedName);
-    if (!blockedUntil) return 0;
-    return Math.ceil((blockedUntil - Date.now()) / 60000);
-  };
-
-  // Block a user for 5 minutes
-  const blockUser = (name: string) => {
-    const normalizedName = name.trim().toLowerCase();
-    setBlockedUsers((prev) => {
-      const newMap = new Map(prev);
-      newMap.set(normalizedName, Date.now() + BLOCK_DURATION_MS);
-      return newMap;
-    });
-  };
-
   const handleSubmit = async () => {
     if (!employeeName.trim()) {
       toast({
@@ -74,17 +36,6 @@ const CheckInCard = () => {
     }
 
     const normalizedName = employeeName.trim().toLowerCase();
-
-    // Check if user is blocked
-    if (isUserBlocked(employeeName)) {
-      const remaining = getBlockTimeRemaining(employeeName);
-      toast({
-        title: "Please wait",
-        description: `${employeeName} can check in again in ${remaining} minute${remaining !== 1 ? 's' : ''}.`,
-        variant: "destructive",
-      });
-      return;
-    }
 
     // Check if already checked in - if so, check them out
     const existingRecord = activeCheckIns.find(
@@ -124,7 +75,6 @@ const CheckInCard = () => {
 
     await saveRecord(newRecord);
     setActiveCheckIns((prev) => [...prev, newRecord]);
-    blockUser(employeeName); // Block for 5 minutes after check-in
     setEmployeeName("");
     
     toast({
@@ -133,25 +83,6 @@ const CheckInCard = () => {
     });
   };
 
-  const handleQuickCheckOut = async (record: CheckInRecord) => {
-    const checkOutTime = new Date().toISOString();
-    const workedTime = calculateWorkedMinutes(record.checkInTime, checkOutTime);
-    
-    const completedRecord: CheckInRecord = {
-      ...record,
-      checkOutTime,
-      workedTime,
-    };
-
-    await saveRecord(completedRecord);
-    setActiveCheckIns((prev) => prev.filter((r) => r.id !== record.id));
-    setHistory((prev) => [completedRecord, ...prev]);
-    
-    toast({
-      title: "Checked out",
-      description: `${record.employeeName} worked for ${formatWorkedTime(workedTime)}.`,
-    });
-  };
 
   const formatTime = (isoString: string) => {
     return new Date(isoString).toLocaleTimeString("en-US", {
@@ -209,38 +140,6 @@ const CheckInCard = () => {
             Check In / Out
           </Button>
 
-          {/* Active check-ins list */}
-          {activeCheckIns.length > 0 && (
-            <div className="space-y-3 pt-4 border-t border-border">
-              <p className="text-sm font-medium text-muted-foreground">
-                Currently Checked In
-              </p>
-              {activeCheckIns.map((record) => (
-                <div
-                  key={record.id}
-                  className="flex items-center justify-between p-3 bg-success/10 rounded-lg border border-success/20"
-                >
-                  <div>
-                    <p className="font-medium text-foreground text-sm">
-                      {record.employeeName}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Checked in at {formatTime(record.checkInTime)}
-                    </p>
-                  </div>
-                  <Button
-                    onClick={() => handleQuickCheckOut(record)}
-                    variant="outline"
-                    size="sm"
-                    className="border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground"
-                  >
-                    <LogOut className="mr-1 h-4 w-4" />
-                    Out
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
         </CardContent>
       </Card>
 
