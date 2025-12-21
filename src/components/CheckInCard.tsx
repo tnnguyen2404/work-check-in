@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Clock, LogIn, LogOut, User } from "lucide-react";
+import { Clock, LogIn, User } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { getAllRecords, saveRecord, CheckInRecord } from "@/localDb/checkins";
 import { calculateWorkedMinutes } from "@/lib/time";
@@ -25,30 +25,54 @@ const CheckInCard = () => {
     loadRecords();
   }, []);
 
-  const handleCheckIn = async () => {
+  const handleSubmit = async () => {
     if (!employeeName.trim()) {
       toast({
         title: "Name required",
-        description: "Please enter your name to check in.",
+        description: "Please enter your name.",
         variant: "destructive",
       });
       return;
     }
 
-    const alreadyCheckedIn = activeCheckIns.some(
-      (record) =>
-        record.employeeName.toLowerCase() === employeeName.trim().toLowerCase()
+    const normalizedName = employeeName.trim().toLowerCase();
+
+    // Check if already checked in - if so, check them out
+    const existingRecord = activeCheckIns.find(
+      (record) => record.employeeName.toLowerCase() === normalizedName
     );
 
-    if (alreadyCheckedIn) {
+    if (existingRecord) {
+      // Check out the user
+      const checkOutTime = new Date().toISOString();
+      const workedTime = calculateWorkedMinutes(
+        existingRecord.checkInTime,
+        checkOutTime
+      );
+
+      const completedRecord: CheckInRecord = {
+        ...existingRecord,
+        checkOutTime,
+        workedTime,
+      };
+
+      await saveRecord(completedRecord);
+      setActiveCheckIns((prev) =>
+        prev.filter((r) => r.id !== existingRecord.id)
+      );
+      setHistory((prev) => [completedRecord, ...prev]);
+      setEmployeeName("");
+
       toast({
-        title: "Already checked in",
-        description: `${employeeName} is already checked in.`,
-        variant: "destructive",
+        title: "Checked out",
+        description: `${
+          existingRecord.employeeName
+        } worked for ${formatWorkedTime(workedTime)}.`,
       });
       return;
     }
 
+    // New check-in
     const newRecord: CheckInRecord = {
       id: Date.now().toString(),
       employeeName: employeeName.trim(),
@@ -59,27 +83,11 @@ const CheckInCard = () => {
     await saveRecord(newRecord);
     setActiveCheckIns((prev) => [...prev, newRecord]);
     setEmployeeName("");
-  };
 
-  const handleCheckOut = async (recordId: string) => {
-    const record = activeCheckIns.find((r) => r.id === recordId);
-    if (record) {
-      const checkOutTime = new Date().toISOString();
-      const workedTime = calculateWorkedMinutes(
-        record.checkInTime,
-        checkOutTime
-      );
-
-      const completedRecord: CheckInRecord = {
-        ...record,
-        checkOutTime,
-        workedTime,
-      };
-
-      await saveRecord(completedRecord);
-      setActiveCheckIns((prev) => prev.filter((r) => r.id !== recordId));
-      setHistory((prev) => [completedRecord, ...prev]);
-    }
+    toast({
+      title: "Checked in",
+      description: `${newRecord.employeeName} checked in successfully.`,
+    });
   };
 
   const formatTime = (isoString: string) => {
@@ -125,51 +133,18 @@ const CheckInCard = () => {
                 value={employeeName}
                 onChange={(e) => setEmployeeName(e.target.value)}
                 className="pl-10 h-12 text-base"
-                onKeyDown={(e) => e.key === "Enter" && handleCheckIn()}
+                onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
               />
             </div>
           </div>
           <Button
-            onClick={handleCheckIn}
+            onClick={handleSubmit}
             className="w-full h-14 text-lg font-semibold gradient-primary hover:opacity-90 transition-opacity shadow-soft"
             size="lg"
           >
             <LogIn className="mr-2 h-5 w-5" />
-            Check In
+            Check In / Out
           </Button>
-
-          {/* Active check-ins list */}
-          {activeCheckIns.length > 0 && (
-            <div className="space-y-3 pt-4 border-t border-border">
-              <p className="text-sm font-medium text-muted-foreground">
-                Currently Checked In
-              </p>
-              {activeCheckIns.map((record) => (
-                <div
-                  key={record.id}
-                  className="flex items-center justify-between p-3 bg-success/10 rounded-lg border border-success/20"
-                >
-                  <div>
-                    <p className="font-medium text-foreground text-sm">
-                      {record.employeeName}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Checked in at {formatTime(record.checkInTime)}
-                    </p>
-                  </div>
-                  <Button
-                    onClick={() => handleCheckOut(record.id)}
-                    variant="outline"
-                    size="sm"
-                    className="border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground"
-                  >
-                    <LogOut className="mr-1 h-4 w-4" />
-                    Out
-                  </Button>
-                </div>
-              ))}
-            </div>
-          )}
         </CardContent>
       </Card>
     </div>
