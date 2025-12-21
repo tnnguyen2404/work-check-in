@@ -172,42 +172,6 @@ const CheckInCard = () => {
           )}
         </CardContent>
       </Card>
-
-      {/* History Card */}
-      {history.length > 0 && (
-        <Card className="shadow-card border-0 animate-fade-in">
-          <CardHeader className="pb-3">
-            <CardTitle className="font-heading text-lg text-foreground">
-              Today's Activity
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-3">
-              {history.slice(0, 5).map((record) => (
-                <div
-                  key={record.id}
-                  className="flex items-center justify-between p-3 rounded-lg bg-muted/50"
-                >
-                  <div>
-                    <p className="font-medium text-foreground text-sm">
-                      {record.employeeName}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      {formatTime(record.checkInTime)} -{" "}
-                      {record.checkOutTime && formatTime(record.checkOutTime)}
-                    </p>
-                  </div>
-                  <span className="text-xs font-medium px-2 py-1 rounded-full bg-success/10 text-success">
-                    {record.workedTime !== undefined
-                      ? formatWorkedTime(record.workedTime)
-                      : "Complete"}
-                  </span>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      )}
     </div>
   );
 };
