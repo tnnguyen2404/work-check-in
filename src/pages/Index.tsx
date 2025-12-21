@@ -9,14 +9,14 @@ const Index = () => {
     <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-10">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
+        <div className="w-full px-6 py-4 flex items-center justify-between">
           <h1 className="font-heading text-xl font-semibold text-foreground">
             TimeTrack
           </h1>
           <Link to="/working-time">
             <Button variant="outline" size="sm" className="gap-2">
               <Clock className="h-4 w-4" />
-              Working Hours
+              Admin
             </Button>
           </Link>
         </div>
@@ -41,7 +41,7 @@ const Index = () => {
       <footer className="border-t border-border mt-auto">
         <div className="container mx-auto px-4 py-4">
           <p className="text-center text-sm text-muted-foreground">
-            © {new Date().getFullYear()} TimeTrack • Employee Check-In System
+            © {new Date().getFullYear()} Employee Check-In System
           </p>
         </div>
       </footer>
