@@ -7,10 +7,13 @@ import { useToast } from "@/hooks/use-toast";
 import { getAllRecords, saveRecord, CheckInRecord } from "@/localDb/checkins";
 import { calculateWorkedMinutes } from "@/lib/time";
 
+const BLOCK_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+
 const CheckInCard = () => {
   const [employeeName, setEmployeeName] = useState("");
   const [activeCheckIns, setActiveCheckIns] = useState<CheckInRecord[]>([]);
   const [history, setHistory] = useState<CheckInRecord[]>([]);
+  const [blockedUsers, setBlockedUsers] = useState<Map<string, number>>(new Map());
   const { toast } = useToast();
 
   // Load records from IndexedDB on mount
@@ -25,30 +28,93 @@ const CheckInCard = () => {
     loadRecords();
   }, []);
 
-  const handleCheckIn = async () => {
+  // Check if user is blocked
+  const isUserBlocked = (name: string): boolean => {
+    const normalizedName = name.trim().toLowerCase();
+    const blockedUntil = blockedUsers.get(normalizedName);
+    if (!blockedUntil) return false;
+    if (Date.now() >= blockedUntil) {
+      // Block expired, remove it
+      setBlockedUsers((prev) => {
+        const newMap = new Map(prev);
+        newMap.delete(normalizedName);
+        return newMap;
+      });
+      return false;
+    }
+    return true;
+  };
+
+  // Get remaining block time in minutes
+  const getBlockTimeRemaining = (name: string): number => {
+    const normalizedName = name.trim().toLowerCase();
+    const blockedUntil = blockedUsers.get(normalizedName);
+    if (!blockedUntil) return 0;
+    return Math.ceil((blockedUntil - Date.now()) / 60000);
+  };
+
+  // Block a user for 5 minutes
+  const blockUser = (name: string) => {
+    const normalizedName = name.trim().toLowerCase();
+    setBlockedUsers((prev) => {
+      const newMap = new Map(prev);
+      newMap.set(normalizedName, Date.now() + BLOCK_DURATION_MS);
+      return newMap;
+    });
+  };
+
+  const handleSubmit = async () => {
     if (!employeeName.trim()) {
       toast({
         title: "Name required",
-        description: "Please enter your name to check in.",
+        description: "Please enter your name.",
         variant: "destructive",
       });
       return;
     }
 
-    const alreadyCheckedIn = activeCheckIns.some(
-      (record) =>
-        record.employeeName.toLowerCase() === employeeName.trim().toLowerCase()
+    const normalizedName = employeeName.trim().toLowerCase();
+
+    // Check if user is blocked
+    if (isUserBlocked(employeeName)) {
+      const remaining = getBlockTimeRemaining(employeeName);
+      toast({
+        title: "Please wait",
+        description: `${employeeName} can check in again in ${remaining} minute${remaining !== 1 ? 's' : ''}.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Check if already checked in - if so, check them out
+    const existingRecord = activeCheckIns.find(
+      (record) => record.employeeName.toLowerCase() === normalizedName
     );
 
-    if (alreadyCheckedIn) {
+    if (existingRecord) {
+      // Check out the user
+      const checkOutTime = new Date().toISOString();
+      const workedTime = calculateWorkedMinutes(existingRecord.checkInTime, checkOutTime);
+      
+      const completedRecord: CheckInRecord = {
+        ...existingRecord,
+        checkOutTime,
+        workedTime,
+      };
+
+      await saveRecord(completedRecord);
+      setActiveCheckIns((prev) => prev.filter((r) => r.id !== existingRecord.id));
+      setHistory((prev) => [completedRecord, ...prev]);
+      setEmployeeName("");
+      
       toast({
-        title: "Already checked in",
-        description: `${employeeName} is already checked in.`,
-        variant: "destructive",
+        title: "Checked out",
+        description: `${existingRecord.employeeName} worked for ${formatWorkedTime(workedTime)}.`,
       });
       return;
     }
 
+    // New check-in
     const newRecord: CheckInRecord = {
       id: Date.now().toString(),
       employeeName: employeeName.trim(),
@@ -58,25 +124,33 @@ const CheckInCard = () => {
 
     await saveRecord(newRecord);
     setActiveCheckIns((prev) => [...prev, newRecord]);
+    blockUser(employeeName); // Block for 5 minutes after check-in
     setEmployeeName("");
+    
+    toast({
+      title: "Checked in",
+      description: `${newRecord.employeeName} checked in successfully.`,
+    });
   };
 
-  const handleCheckOut = async (recordId: string) => {
-    const record = activeCheckIns.find((r) => r.id === recordId);
-    if (record) {
-      const checkOutTime = new Date().toISOString();
-      const workedTime = calculateWorkedMinutes(record.checkInTime, checkOutTime);
-      
-      const completedRecord: CheckInRecord = {
-        ...record,
-        checkOutTime,
-        workedTime,
-      };
+  const handleQuickCheckOut = async (record: CheckInRecord) => {
+    const checkOutTime = new Date().toISOString();
+    const workedTime = calculateWorkedMinutes(record.checkInTime, checkOutTime);
+    
+    const completedRecord: CheckInRecord = {
+      ...record,
+      checkOutTime,
+      workedTime,
+    };
 
-      await saveRecord(completedRecord);
-      setActiveCheckIns((prev) => prev.filter((r) => r.id !== recordId));
-      setHistory((prev) => [completedRecord, ...prev]);
-    }
+    await saveRecord(completedRecord);
+    setActiveCheckIns((prev) => prev.filter((r) => r.id !== record.id));
+    setHistory((prev) => [completedRecord, ...prev]);
+    
+    toast({
+      title: "Checked out",
+      description: `${record.employeeName} worked for ${formatWorkedTime(workedTime)}.`,
+    });
   };
 
   const formatTime = (isoString: string) => {
@@ -122,17 +196,17 @@ const CheckInCard = () => {
                 value={employeeName}
                 onChange={(e) => setEmployeeName(e.target.value)}
                 className="pl-10 h-12 text-base"
-                onKeyDown={(e) => e.key === "Enter" && handleCheckIn()}
+                onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
               />
             </div>
           </div>
           <Button
-            onClick={handleCheckIn}
+            onClick={handleSubmit}
             className="w-full h-14 text-lg font-semibold gradient-primary hover:opacity-90 transition-opacity shadow-soft"
             size="lg"
           >
             <LogIn className="mr-2 h-5 w-5" />
-            Check In
+            Check In / Out
           </Button>
 
           {/* Active check-ins list */}
@@ -155,7 +229,7 @@ const CheckInCard = () => {
                     </p>
                   </div>
                   <Button
-                    onClick={() => handleCheckOut(record.id)}
+                    onClick={() => handleQuickCheckOut(record)}
                     variant="outline"
                     size="sm"
                     className="border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground"
