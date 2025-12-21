@@ -71,10 +71,6 @@ const CheckInCard = () => {
       );
 
       const completedRecord: CheckInRecord = {
-      const checkOutTime = new Date().toISOString();
-      const workedTime = calculateWorkedMinutes(record.checkInTime, checkOutTime);
-      
-      const completedRecord: CheckInRecord = {
         ...record,
         checkOutTime,
         workedTime,
@@ -205,7 +201,6 @@ const CheckInCard = () => {
                     {record.workedTime !== undefined
                       ? formatWorkedTime(record.workedTime)
                       : "Complete"}
-                    {record.workedTime !== undefined ? formatWorkedTime(record.workedTime) : "Complete"}
                   </span>
                 </div>
               ))}
