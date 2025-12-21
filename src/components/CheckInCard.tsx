@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,6 +12,25 @@ const CheckInCard = () => {
   const [activeCheckIns, setActiveCheckIns] = useState<CheckInRecord[]>([]);
   const [history, setHistory] = useState<CheckInRecord[]>([]);
   const { toast } = useToast();
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-focus input on mount and refocus when clicking outside
+  useEffect(() => {
+    inputRef.current?.focus();
+
+    const handleClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      // Allow clicks on links to Working Hours page
+      if (target.closest('a[href="/working-time"]')) {
+        return;
+      }
+      // Refocus input for all other clicks
+      setTimeout(() => inputRef.current?.focus(), 0);
+    };
+
+    document.addEventListener("click", handleClick);
+    return () => document.removeEventListener("click", handleClick);
+  }, []);
 
   // Load records from IndexedDB on mount
   useEffect(() => {
@@ -128,6 +147,7 @@ const CheckInCard = () => {
             <div className="relative">
               <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
+                ref={inputRef}
                 type="text"
                 placeholder="Enter your name"
                 value={employeeName}
