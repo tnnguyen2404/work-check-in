@@ -11,9 +11,9 @@ const Index = () => {
       <header className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-10">
         <div className="w-full px-6 py-4 flex items-center justify-between">
           <h1 className="font-heading text-xl font-semibold text-foreground">
-            TimeTrack
+            Baskin Robbins
           </h1>
-          <Link to="/working-time">
+          <Link to="/admin-login">
             <Button variant="outline" size="sm" className="gap-2">
               <Clock className="h-4 w-4" />
               Admin

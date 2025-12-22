@@ -4,15 +4,36 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Clock, LogIn, User } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import { getAllRecords, saveRecord, CheckInRecord } from "@/localDb/checkins";
+import {
+  getAllRecords,
+  saveRecord,
+  CheckInRecord,
+  getAllEmployees,
+} from "@/localDb/db";
 import { calculateWorkedMinutes } from "@/lib/time";
+
+type Notice = {
+  title: string;
+  description: string;
+  kind: "success" | "error";
+} | null;
 
 const CheckInCard = () => {
   const [employeeName, setEmployeeName] = useState("");
   const [activeCheckIns, setActiveCheckIns] = useState<CheckInRecord[]>([]);
   const [history, setHistory] = useState<CheckInRecord[]>([]);
   const { toast } = useToast();
+  const [notice, setNotice] = useState<Notice>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [employees, setEmployees] = useState([]);
+
+  useEffect(() => {
+    const loadEmployees = async () => {
+      const list = await getAllEmployees();
+      setEmployees(list);
+    };
+    loadEmployees();
+  }, []);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -20,7 +41,7 @@ const CheckInCard = () => {
     const handleClick = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
 
-      if (target.closest('a[href="/working-time"]')) {
+      if (target.closest('a[href="/admin-login"]')) {
         return;
       }
 
@@ -31,7 +52,6 @@ const CheckInCard = () => {
     return () => document.removeEventListener("click", handleClick);
   }, []);
 
-  // Load records from IndexedDB on mount
   useEffect(() => {
     const loadRecords = async () => {
       const records = await getAllRecords();
@@ -43,11 +63,19 @@ const CheckInCard = () => {
     loadRecords();
   }, []);
 
+  const showNotice = (n: Notice, ms = 2000) => {
+    setNotice(n);
+    window.setTimeout(() => {
+      setNotice(null);
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }, ms);
+  };
+
   const handleSubmit = async () => {
     if (!employeeName.trim()) {
       toast({
-        title: "Name required",
-        description: "Please enter your name.",
+        title: "Username required",
+        description: "Please enter your username.",
         variant: "destructive",
       });
       return;
@@ -55,13 +83,26 @@ const CheckInCard = () => {
 
     const normalizedName = employeeName.trim().toLowerCase();
 
-    // Check if already checked in - if so, check them out
+    const isAllowed = employees.some(
+      (e) => e.name.trim().toLowerCase() === normalizedName
+    );
+
+    if (!isAllowed) {
+      toast({
+        title: "Not allowed",
+        description: "Username not found. Ask admin to add you.",
+        variant: "destructive",
+      });
+      setEmployeeName("");
+      inputRef.current?.focus();
+      return;
+    }
+
     const existingRecord = activeCheckIns.find(
       (record) => record.employeeName.toLowerCase() === normalizedName
     );
 
     if (existingRecord) {
-      // Check out the user
       const checkOutTime = new Date().toISOString();
       const workedTime = calculateWorkedMinutes(
         existingRecord.checkInTime,
@@ -81,11 +122,12 @@ const CheckInCard = () => {
       setHistory((prev) => [completedRecord, ...prev]);
       setEmployeeName("");
 
-      toast({
+      showNotice({
+        kind: "success",
         title: "Checked out",
         description: `${
           existingRecord.employeeName
-        } checked out at ${formatWorkedTime(workedTime)}.`,
+        } checked out at ${formatTime(checkOutTime)}.`,
       });
       return;
     }
@@ -102,9 +144,10 @@ const CheckInCard = () => {
     setActiveCheckIns((prev) => [...prev, newRecord]);
     setEmployeeName("");
 
-    toast({
+    showNotice({
+      kind: "success",
       title: "Checked in",
-      description: `${newRecord.employeeName} checked in at ${formatTime(
+      description: `${employeeName} checked in at ${formatTime(
         newRecord.checkInTime
       )}.`,
     });
@@ -118,55 +161,58 @@ const CheckInCard = () => {
     });
   };
 
-  const formatWorkedTime = (minutes: number) => {
-    const hours = Math.floor(minutes / 60);
-    const mins = minutes % 60;
-    if (hours > 0) {
-      return `${hours}h ${mins}m`;
-    }
-    return `${mins}m`;
-  };
-
   return (
     <div className="space-y-6 w-full max-w-md mx-auto">
       {/* Main Check-In Card */}
-      <Card
-        className={`shadow-card border-0 overflow-hidden transition-all duration-300 $`}
-      >
+      <Card className="shadow-card border-0 overflow-hidden transition-all duration-300">
         <CardHeader className="gradient-primary text-primary-foreground pb-8">
           <CardTitle className="font-heading text-2xl flex items-center gap-3">
             <Clock className="h-6 w-6" />
             Employee Check-In
           </CardTitle>
         </CardHeader>
-        <CardContent className="pt-6 space-y-6">
-          {/* Check-in form - always visible */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-foreground">
-              Your Name
-            </label>
-            <div className="relative">
-              <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-              <Input
-                ref={inputRef}
-                type="text"
-                placeholder="Enter your name"
-                value={employeeName}
-                onChange={(e) => setEmployeeName(e.target.value)}
-                className="pl-10 h-12 text-base"
-                onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
-                autoFocus
-              />
+
+        <CardContent className="pt-6">
+          {notice ? (
+            /* ✅ SUCCESS CARD (shown for 2 seconds) */
+            <div className="min-h-[220px] flex flex-col items-center justify-center text-center gap-3">
+              <div className="text-3xl font-semibold">{notice.title}</div>
+              <div className="text-lg text-muted-foreground">
+                {notice.description}
+              </div>
             </div>
-          </div>
-          <Button
-            onClick={handleSubmit}
-            className="w-full h-14 text-lg font-semibold gradient-primary hover:opacity-90 transition-opacity shadow-soft"
-            size="lg"
-          >
-            <LogIn className="mr-2 h-5 w-5" />
-            Check In / Out
-          </Button>
+          ) : (
+            /* ✅ NORMAL CHECK-IN FORM */
+            <div className="space-y-6">
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-foreground">
+                  Your Name
+                </label>
+                <div className="relative">
+                  <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    ref={inputRef}
+                    type="text"
+                    placeholder="Enter your name"
+                    value={employeeName}
+                    onChange={(e) => setEmployeeName(e.target.value)}
+                    className="pl-10 h-12 text-base"
+                    onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+                    autoFocus
+                  />
+                </div>
+              </div>
+
+              <Button
+                onClick={handleSubmit}
+                className="w-full h-14 text-lg font-semibold gradient-primary hover:opacity-90 transition-opacity shadow-soft"
+                size="lg"
+              >
+                <LogIn className="mr-2 h-5 w-5" />
+                Check In / Out
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
