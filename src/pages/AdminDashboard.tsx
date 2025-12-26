@@ -10,13 +10,18 @@ import {
   Calendar as CalendarIcon,
   Plus,
   UserPlus,
+  Download,
+  MapPin,
 } from "lucide-react";
 import {
   getAllRecords,
   getAllEmployees,
+  getAllLocations,
   saveEmployee,
+  saveLocation,
   Employee,
   CheckInRecord,
+  Location,
 } from "@/localDb/db";
 import { Calendar } from "@/components/ui/calendar";
 import {
@@ -27,9 +32,24 @@ import {
   endOfWeek,
   isSameDay,
   isSameMonth,
+  isWithinInterval,
 } from "date-fns";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import * as XLSX from "xlsx";
+import { DateRange } from "react-day-picker";
 
 interface DayHours {
   date: Date;
@@ -43,7 +63,16 @@ const WorkingTime = () => {
   const [currentMonth, setCurrentMonth] = useState<Date>(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
   const [newEmployeeName, setNewEmployeeName] = useState("");
+  const [newEmployeeId, setNewEmployeeId] = useState("");
   const [showAddForm, setShowAddForm] = useState(false);
+  const [showExportDialog, setShowExportDialog] = useState(false);
+  const [exportDateRange, setExportDateRange] = useState<DateRange | undefined>(
+    undefined
+  );
+  const [showAddLocationDialog, setShowAddLocationDialog] = useState(false);
+  const [newLocationName, setNewLocationName] = useState("");
+  const [locations, setLocations] = useState<Location[]>([]);
+  const [selectedLocation, setSelectedLocation] = useState<string | null>(null);
   const { toast } = useToast();
 
   useEffect(() => {
@@ -56,40 +85,112 @@ const WorkingTime = () => {
 
       const employees = await getAllEmployees();
       setStoredEmployees(employees);
+
+      const locations = await getAllLocations();
+      setLocations(locations);
+
+      if (locations.length > 0 && !selectedLocation) {
+        setSelectedLocation(locations[0].id);
+      }
     };
     loadData();
   }, []);
 
   // Get unique employee names (combine stored employees with those from records)
   const employees = useMemo(() => {
-    const namesFromRecords = records.map((r) => r.employeeName);
-    const namesFromStored = storedEmployees.map((e) => e.name);
+    if (!selectedLocation) return [];
+    const locationEmployees = storedEmployees.filter(
+      (e) => e.locationId === selectedLocation
+    );
+    const namesFromStored = locationEmployees.map((e) => e.name);
+    const namesFromRecords = records
+      .filter(
+        (r) =>
+          r.employeeName ===
+          locationEmployees.find((e) => e.name === r.employeeName)?.name
+      )
+      .map((r) => r.employeeName);
     const allNames = new Set([...namesFromRecords, ...namesFromStored]);
     return Array.from(allNames).sort();
-  }, [records, storedEmployees]);
+  }, [records, storedEmployees, selectedLocation]);
 
   // Auto-select first employee if none selected
   useEffect(() => {
-    if (!selectedEmployee && employees.length > 0) {
+    if (employees.length > 0) {
       setSelectedEmployee(employees[0]);
+    } else {
+      setSelectedEmployee(null);
     }
-  }, [employees, selectedEmployee]);
+  }, [selectedLocation, employees]);
+
+  const handleAddLocation = async () => {
+    const trimmedName = newLocationName.trim();
+
+    if (!trimmedName) {
+      toast({ title: "Please enter a location name", variant: "destructive" });
+      return;
+    }
+
+    if (
+      locations.some((l) => l.name.toLowerCase() === trimmedName.toLowerCase())
+    ) {
+      toast({ title: "Location already exists", variant: "destructive" });
+      return;
+    }
+
+    const newLocation: Location = {
+      id: crypto.randomUUID(),
+      name: trimmedName,
+      createdAt: new Date().toISOString(),
+    };
+
+    await saveLocation(newLocation);
+    setLocations((prev) => [...prev, newLocation]);
+    setNewLocationName("");
+    setShowAddLocationDialog(false);
+    setSelectedLocation(newLocation.id);
+    toast({ title: `Location "${trimmedName}" added` });
+  };
 
   const handleAddEmployee = async () => {
+    if (!selectedLocation) {
+      toast({
+        title: "Please select a location first",
+        variant: "destructive",
+      });
+      return;
+    }
+
     const trimmedName = newEmployeeName.trim();
+    const trimmedId = newEmployeeId.trim();
+
+    if (!trimmedId) {
+      toast({ title: "Please enter an ID", variant: "destructive" });
+      return;
+    }
+
     if (!trimmedName) {
       toast({ title: "Please enter a name", variant: "destructive" });
       return;
     }
 
+    if (employees.includes(trimmedId)) {
+      toast({ title: "Employee ID already exists", variant: "destructive" });
+      return;
+    }
+
     if (employees.includes(trimmedName)) {
-      toast({ title: "Employee already exists", variant: "destructive" });
+      toast({
+        title: "Employee username already exists",
+        variant: "destructive",
+      });
       return;
     }
 
     const newEmployee: Employee = {
-      id: crypto.randomUUID(),
+      id: trimmedId,
       name: trimmedName,
+      locationId: selectedLocation,
       createdAt: new Date().toISOString(),
     };
 
@@ -99,6 +200,51 @@ const WorkingTime = () => {
     setShowAddForm(false);
     setSelectedEmployee(trimmedName);
     toast({ title: `Employee "${trimmedName}" added` });
+  };
+
+  const handleExportClick = () => {
+    setExportDateRange(undefined);
+    setShowExportDialog(true);
+  };
+
+  const handleExport = () => {
+    if (!exportDateRange?.from || !exportDateRange?.to) {
+      toast({ title: "Please select a date range", variant: "destructive" });
+      return;
+    }
+
+    const { from, to } = exportDateRange;
+
+    // Build header row: Employee Name + Total Hours
+    const headers = ["Employee Name", "Total Hours"];
+
+    // Build data rows for each employee
+    const rows = employees.map((employeeName) => {
+      const empRecords = records.filter((r) => r.employeeName === employeeName);
+      const totalMinutes = empRecords
+        .filter((r) => {
+          const recordDate = new Date(r.checkInTime);
+          return isWithinInterval(recordDate, { start: from, end: to });
+        })
+        .reduce((sum, r) => sum + (r.workedTime || 0), 0);
+
+      return [employeeName, formatHours(totalMinutes)];
+    });
+
+    // Create workbook and worksheet
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Working Hours");
+
+    // Download
+    const fileName = `working_hours_${format(from, "yyyyMMdd")}_${format(
+      to,
+      "yyyyMMdd"
+    )}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+
+    setShowExportDialog(false);
+    toast({ title: "Export successful" });
   };
 
   // Get records for selected employee
@@ -179,7 +325,7 @@ const WorkingTime = () => {
     <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-10">
-        <div className="container mx-auto px-4 py-4 flex items-center gap-4">
+        <div className="w-full px-4 py-4 flex items-center gap-4">
           <Link to="/">
             <Button variant="ghost" size="icon">
               <ArrowLeft className="h-5 w-5" />
@@ -188,6 +334,61 @@ const WorkingTime = () => {
           <h1 className="font-heading text-xl font-semibold text-foreground">
             Admin Dashboard
           </h1>
+
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" size="sm" className="gap-2">
+                <MapPin className="h-4 w-4" />
+                {selectedLocation
+                  ? locations.find((l) => l.id === selectedLocation)?.name ||
+                    "Select Location"
+                  : "Select Location"}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-56 p-2 bg-popover" align="end">
+              <div className="space-y-1">
+                {locations.map((loc) => (
+                  <button
+                    key={loc.id}
+                    onClick={() => setSelectedLocation(loc.id)}
+                    className={cn(
+                      "w-full text-left px-3 py-2 rounded-md text-sm transition-colors",
+                      selectedLocation === loc.id
+                        ? "bg-primary text-primary-foreground"
+                        : "hover:bg-muted"
+                    )}
+                  >
+                    {loc.name}
+                  </button>
+                ))}
+                {locations.length === 0 && (
+                  <p className="text-sm text-muted-foreground px-3 py-2">
+                    No locations
+                  </p>
+                )}
+                <div className="border-t border-border mt-2 pt-2">
+                  <button
+                    onClick={() => setShowAddLocationDialog(true)}
+                    className="w-full text-left px-3 py-2 rounded-md text-sm text-primary hover:bg-muted flex items-center gap-2"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Add Location
+                  </button>
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
+
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleExportClick}
+            disabled={employees.length === 0}
+            className="ml-auto gap-2"
+          >
+            <Download className="h-4 w-4" />
+            Export Excel
+          </Button>
         </div>
       </header>
 
@@ -217,23 +418,31 @@ const WorkingTime = () => {
                 {/* Add Employee Form */}
                 {showAddForm && (
                   <div className="p-4 border-b border-border/30 bg-muted/20">
-                    <div className="flex gap-2">
+                    <div className="flex flex-col gap-2">
                       <Input
-                        placeholder="Employee name"
-                        value={newEmployeeName}
-                        onChange={(e) => setNewEmployeeName(e.target.value)}
-                        onKeyDown={(e) =>
-                          e.key === "Enter" && handleAddEmployee()
-                        }
+                        placeholder="Employee ID"
+                        value={newEmployeeId}
+                        onChange={(e) => setNewEmployeeId(e.target.value)}
                         className="h-9"
                       />
-                      <Button
-                        size="sm"
-                        onClick={handleAddEmployee}
-                        className="h-9"
-                      >
-                        <Plus className="h-4 w-4" />
-                      </Button>
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder="Employee name"
+                          value={newEmployeeName}
+                          onChange={(e) => setNewEmployeeName(e.target.value)}
+                          onKeyDown={(e) =>
+                            e.key === "Enter" && handleAddEmployee()
+                          }
+                          className="h-9"
+                        />
+                        <Button
+                          size="sm"
+                          onClick={handleAddEmployee}
+                          className="h-9"
+                        >
+                          <Plus className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -468,6 +677,80 @@ const WorkingTime = () => {
           </div>
         </div>
       </main>
+
+      <Dialog
+        open={showAddLocationDialog}
+        onOpenChange={setShowAddLocationDialog}
+      >
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Add New Location</DialogTitle>
+          </DialogHeader>
+          <div className="py-4">
+            <Input
+              placeholder="Location name"
+              value={newLocationName}
+              onChange={(e) => setNewLocationName(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleAddLocation()}
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowAddLocationDialog(false)}
+            >
+              Cancel
+            </Button>
+            <Button onClick={handleAddLocation}>
+              <Plus className="h-4 w-4 mr-2" />
+              Add Location
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showExportDialog} onOpenChange={setShowExportDialog}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Export Working Hours</DialogTitle>
+          </DialogHeader>
+          <div className="py-4">
+            <p className="text-sm text-muted-foreground mb-4">
+              Select a date range to export all employees' working hours.
+            </p>
+            <div className="flex justify-center">
+              <Calendar
+                mode="range"
+                selected={exportDateRange}
+                onSelect={setExportDateRange}
+                numberOfMonths={1}
+                className="rounded-md border pointer-events-auto"
+              />
+            </div>
+            {exportDateRange?.from && exportDateRange?.to && (
+              <p className="text-sm text-center mt-4 text-muted-foreground">
+                {format(exportDateRange.from, "MMM d, yyyy")} —{" "}
+                {format(exportDateRange.to, "MMM d, yyyy")}
+              </p>
+            )}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowExportDialog(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleExport}
+              disabled={!exportDateRange?.from || !exportDateRange?.to}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Export
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
