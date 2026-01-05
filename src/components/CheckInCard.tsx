@@ -2,15 +2,9 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Clock, LogIn, User } from "lucide-react";
+import { Clock, LogIn, CreditCard, CheckCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
-import {
-  getAllRecords,
-  saveRecord,
-  CheckInRecord,
-  getAllEmployees,
-} from "@/localDb/db";
-import { calculateWorkedMinutes } from "@/lib/time";
+import { api } from "@/my_api/backend";
 
 type Notice = {
   title: string;
@@ -19,49 +13,35 @@ type Notice = {
 } | null;
 
 const CheckInCard = () => {
-  const [employeeName, setEmployeeName] = useState("");
-  const [activeCheckIns, setActiveCheckIns] = useState<CheckInRecord[]>([]);
-  const [history, setHistory] = useState<CheckInRecord[]>([]);
+  const [employeeInput, setEmployeeInput] = useState("");
   const { toast } = useToast();
   const [notice, setNotice] = useState<Notice>(null);
   const inputRef = useRef<HTMLInputElement>(null);
-  const [employees, setEmployees] = useState([]);
 
-  useEffect(() => {
-    const loadEmployees = async () => {
-      const list = await getAllEmployees();
-      setEmployees(list);
-    };
-    loadEmployees();
-  }, []);
+  const SCAN_MIN_LENGTH = 6;
+  const SCAN_MAX_AVG_TIME_MS = 35;
+  const SCAN_RESET_TIME_MS = 250;
 
-  useEffect(() => {
-    inputRef.current?.focus();
+  const scanBufRef = useRef("");
+  const scanIntervalRef = useRef<number[]>([]);
+  const lastKeyAtRef = useRef<number | null>(null);
+  const scanResetTimerRef = useRef<number | null>(null);
 
-    const handleClick = (event: MouseEvent) => {
-      const target = event.target as HTMLElement;
+  function formatTime(isoString) {
+    return new Date(isoString).toLocaleTimeString("en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: true,
+    });
+  }
 
-      if (target.closest('a[href="/admin-login"]')) {
-        return;
-      }
-
-      setTimeout(() => inputRef.current?.focus(), 0);
-    };
-
-    document.addEventListener("click", handleClick);
-    return () => document.removeEventListener("click", handleClick);
-  }, []);
-
-  useEffect(() => {
-    const loadRecords = async () => {
-      const records = await getAllRecords();
-      const active = records.filter((r) => !r.checkOutTime);
-      const completed = records.filter((r) => r.checkOutTime);
-      setActiveCheckIns(active);
-      setHistory(completed.reverse());
-    };
-    loadRecords();
-  }, []);
+  function formatMinutes(minutes: number | null) {
+    if (minutes == null) return "N/A";
+    const hrs = Math.floor(minutes / 60);
+    if (hrs <= 0) return `${minutes}m`;
+    const mins = minutes % 60;
+    return `${hrs}h ${mins}m`;
+  }
 
   const showNotice = (n: Notice, ms = 2000) => {
     setNotice(n);
@@ -71,99 +51,145 @@ const CheckInCard = () => {
     }, ms);
   };
 
-  const handleSubmit = async () => {
-    if (!employeeName.trim()) {
-      toast({
-        title: "Username required",
-        description: "Please enter your username.",
-        variant: "destructive",
-      });
-      return;
+  const resetScan = () => {
+    scanBufRef.current = "";
+    scanIntervalRef.current = [];
+    lastKeyAtRef.current = null;
+    if (scanResetTimerRef.current) {
+      window.clearTimeout(scanResetTimerRef.current);
+      scanResetTimerRef.current = null;
     }
-
-    const normalizedName = employeeName.trim().toLowerCase();
-
-    const isAllowed = employees.some(
-      (e) => e.name.trim().toLowerCase() === normalizedName
-    );
-
-    if (!isAllowed) {
-      toast({
-        title: "Not allowed",
-        description: "Username not found. Ask admin to add you.",
-        variant: "destructive",
-      });
-      setEmployeeName("");
-      inputRef.current?.focus();
-      return;
-    }
-
-    const existingRecord = activeCheckIns.find(
-      (record) => record.employeeName.toLowerCase() === normalizedName
-    );
-
-    if (existingRecord) {
-      const checkOutTime = new Date().toISOString();
-      const workedTime = calculateWorkedMinutes(
-        existingRecord.checkInTime,
-        checkOutTime
-      );
-
-      const completedRecord: CheckInRecord = {
-        ...existingRecord,
-        checkOutTime,
-        workedTime,
-      };
-
-      await saveRecord(completedRecord);
-      setActiveCheckIns((prev) =>
-        prev.filter((r) => r.id !== existingRecord.id)
-      );
-      setHistory((prev) => [completedRecord, ...prev]);
-      setEmployeeName("");
-
-      showNotice({
-        kind: "success",
-        title: "Checked out",
-        description: `${
-          existingRecord.employeeName
-        } checked out at ${formatTime(checkOutTime)}.`,
-      });
-      return;
-    }
-
-    // New check-in
-    const newRecord: CheckInRecord = {
-      id: Date.now().toString(),
-      employeeName: employeeName.trim(),
-      checkInTime: new Date().toISOString(),
-      synced: false,
-    };
-
-    await saveRecord(newRecord);
-    setActiveCheckIns((prev) => [...prev, newRecord]);
-    setEmployeeName("");
-
-    showNotice({
-      kind: "success",
-      title: "Checked in",
-      description: `${employeeName} checked in at ${formatTime(
-        newRecord.checkInTime
-      )}.`,
-    });
   };
 
-  const formatTime = (isoString: string) => {
-    return new Date(isoString).toLocaleTimeString("en-US", {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: true,
-    });
+  const isLikelyScan = () => {
+    const buf = scanBufRef.current;
+    const intervals = scanIntervalRef.current;
+    if (buf.length < SCAN_MIN_LENGTH) return false;
+    if (intervals.length === 0) return false;
+    const avg = intervals.reduce((a, b) => a + b, 0) / intervals.length;
+    return avg <= SCAN_MAX_AVG_TIME_MS;
+  };
+
+  const scheduleScanReset = () => {
+    if (scanResetTimerRef.current)
+      window.clearTimeout(scanResetTimerRef.current);
+    scanResetTimerRef.current = window.setTimeout(
+      resetScan,
+      SCAN_RESET_TIME_MS
+    );
+  };
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    const key = e.key;
+
+    if (key === "Enter" || key === "Tab") {
+      const scanned = isLikelyScan() ? scanBufRef.current : null;
+      resetScan();
+
+      if (scanned) {
+        e.preventDefault();
+        handleSubmit(scanned);
+        return;
+      }
+
+      if (key === "Enter") {
+        e.preventDefault();
+        handleSubmit();
+      }
+      return;
+    }
+
+    if (key === "Backspace" || key === "Escape") {
+      resetScan();
+      return;
+    }
+
+    const isChar = key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+    if (!isChar) return;
+
+    const now = Date.now();
+    if (lastKeyAtRef.current != null) {
+      scanIntervalRef.current.push(now - lastKeyAtRef.current);
+    }
+    lastKeyAtRef.current = now;
+    scanBufRef.current += key;
+    scheduleScanReset();
+  };
+
+  useEffect(() => {
+    inputRef.current?.focus();
+
+    const handleClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+
+      if (target.closest('a[href="/admin-login"]')) return;
+
+      inputRef.current?.focus();
+    };
+
+    document.addEventListener("click", handleClick);
+
+    return () => {
+      document.removeEventListener("click", handleClick);
+    };
+  }, []);
+
+  const handleSubmit = async (raw?: string) => {
+    const value = (raw ?? employeeInput).trim();
+
+    if (!value) {
+      toast({
+        title: "ID or Username required",
+        description: "Please enter your id or username.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const result = await api.scanToggle(value);
+
+      setEmployeeInput("");
+      resetScan();
+
+      if (result.action === "checkin") {
+        const when = result.workRecord.checkInAt;
+
+        showNotice({
+          kind: "success",
+          title: "Checked in",
+          description: `${result.employee.name} checked in at ${formatTime(
+            when
+          )}.`,
+        });
+      } else {
+        showNotice({
+          kind: "success",
+          title: "Checked out",
+          description: `${result.employee.name} checked out at ${formatTime(
+            result.checkOutAt.toString()
+          )} • Worked: ${formatMinutes(result.workedTime)}.`,
+        });
+      }
+    } catch (e: any) {
+      toast({
+        title: "Scan failed",
+        description: e?.message || "Request failed",
+        variant: "destructive",
+      });
+      setEmployeeInput("");
+      resetScan();
+      inputRef.current?.focus();
+    }
+  };
+
+  const handleManualSubmit = () => {
+    resetScan();
+    handleSubmit();
   };
 
   return (
     <div className="space-y-6 w-full max-w-md mx-auto">
-      {/* Main Check-In Card */}
       <Card className="shadow-card border-0 overflow-hidden transition-all duration-300">
         <CardHeader className="gradient-primary text-primary-foreground pb-8">
           <CardTitle className="font-heading text-2xl flex items-center gap-3">
@@ -174,37 +200,36 @@ const CheckInCard = () => {
 
         <CardContent className="pt-6">
           {notice ? (
-            /* ✅ SUCCESS CARD (shown for 2 seconds) */
             <div className="min-h-[220px] flex flex-col items-center justify-center text-center gap-3">
+              <CheckCircle className="h-12 w-12 text-green-600" />
               <div className="text-3xl font-semibold">{notice.title}</div>
               <div className="text-lg text-muted-foreground">
                 {notice.description}
               </div>
             </div>
           ) : (
-            /* ✅ NORMAL CHECK-IN FORM */
             <div className="space-y-6">
               <div className="space-y-2">
                 <label className="text-sm font-medium text-foreground">
                   Your Name
                 </label>
                 <div className="relative">
-                  <User className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <CreditCard className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                   <Input
                     ref={inputRef}
                     type="text"
-                    placeholder="Enter your name"
-                    value={employeeName}
-                    onChange={(e) => setEmployeeName(e.target.value)}
+                    placeholder="Enter your ID or username"
+                    value={employeeInput}
+                    onChange={(e) => setEmployeeInput(e.target.value)}
                     className="pl-10 h-12 text-base"
-                    onKeyDown={(e) => e.key === "Enter" && handleSubmit()}
+                    onKeyDown={handleInputKeyDown}
                     autoFocus
                   />
                 </div>
               </div>
 
               <Button
-                onClick={handleSubmit}
+                onClick={handleManualSubmit}
                 className="w-full h-14 text-lg font-semibold gradient-primary hover:opacity-90 transition-opacity shadow-soft"
                 size="lg"
               >

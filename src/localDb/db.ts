@@ -1,8 +1,10 @@
 import { openDB, DBSchema, IDBPDatabase } from "idb";
 
-export interface CheckInRecord {
-  id: string;
+export interface WorkRecord {
+  id: number;
+  employeeId: number;
   employeeName: string;
+  employeeIdentifier?: string;
   checkInTime: string;
   checkOutTime?: string;
   workedTime?: number;
@@ -10,7 +12,8 @@ export interface CheckInRecord {
 }
 
 export interface Employee {
-  id: string;
+  id: number;
+  identifier: string;
   name: string;
   createdAt: string;
   locationId: string;
@@ -23,12 +26,12 @@ export interface Location {
 }
 
 interface AppDB extends DBSchema {
-  checkins: {
+  workRecords: {
     key: string;
-    value: CheckInRecord;
+    value: WorkRecord;
   };
   employees: {
-    key: string;
+    key: number;
     value: Employee;
   };
   locations: {
@@ -41,8 +44,8 @@ const DB_NAME = "employee-checkin-db";
 
 const dbPromise = openDB<AppDB>(DB_NAME, 3, {
   upgrade(db, oldVersion) {
-    if (!db.objectStoreNames.contains("checkins")) {
-      db.createObjectStore("checkins", { keyPath: "id" });
+    if (!db.objectStoreNames.contains("workRecords")) {
+      db.createObjectStore("workRecords", { keyPath: "id" });
     }
     if (!db.objectStoreNames.contains("employees")) {
       db.createObjectStore("employees", { keyPath: "id" });
@@ -54,12 +57,12 @@ const dbPromise = openDB<AppDB>(DB_NAME, 3, {
   }
 });
 
-export async function getAllRecords(): Promise<CheckInRecord[]> {
-  return (await dbPromise).getAll("checkins");
+export async function getAllRecords(): Promise<WorkRecord[]> {
+  return (await dbPromise).getAll("workRecords");
 }
 
-export async function saveRecord(record: CheckInRecord): Promise<void> {
-  await (await dbPromise).put("checkins", record);
+export async function saveRecord(record: WorkRecord): Promise<void> {
+  await (await dbPromise).put("workRecords", record);
 }
 
 export async function getAllEmployees(): Promise<Employee[]> {
@@ -70,7 +73,7 @@ export async function saveEmployee(employee: Employee): Promise<void> {
   await (await dbPromise).put("employees", employee);
 }
 
-export async function deleteEmployee(id: string): Promise<void> {
+export async function deleteEmployee(id: number): Promise<void> {
   await (await dbPromise).delete("employees", id);
 }
 

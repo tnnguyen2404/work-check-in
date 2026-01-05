@@ -12,17 +12,8 @@ import {
   UserPlus,
   Download,
   MapPin,
+  Trash2,
 } from "lucide-react";
-import {
-  getAllRecords,
-  getAllEmployees,
-  getAllLocations,
-  saveEmployee,
-  saveLocation,
-  Employee,
-  CheckInRecord,
-  Location,
-} from "@/localDb/db";
 import { Calendar } from "@/components/ui/calendar";
 import {
   format,
@@ -33,6 +24,7 @@ import {
   isSameDay,
   isSameMonth,
   isWithinInterval,
+  set,
 } from "date-fns";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
@@ -42,6 +34,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogFooter,
+  DialogDescription,
 } from "@/components/ui/dialog";
 import {
   Popover,
@@ -50,223 +43,162 @@ import {
 } from "@/components/ui/popover";
 import * as XLSX from "xlsx";
 import { DateRange } from "react-day-picker";
+import {
+  api,
+  type Employee,
+  type Location,
+  type WorkRecord,
+} from "@/my_api/backend";
 
 interface DayHours {
   date: Date;
   minutes: number;
 }
 
+function recordStartDate(record: WorkRecord) {
+  if (typeof record.checkInAt === "number") {
+    return new Date(record.checkInAt);
+  }
+  return new Date(0);
+}
+
+function recordEndDate(record: WorkRecord) {
+  if (typeof record.checkOutAt === "number") {
+    return new Date(record.checkOutAt);
+  }
+  return null;
+}
+
 const WorkingTime = () => {
-  const [records, setRecords] = useState<CheckInRecord[]>([]);
-  const [storedEmployees, setStoredEmployees] = useState<Employee[]>([]);
-  const [selectedEmployee, setSelectedEmployee] = useState<string | null>(null);
+  const { toast } = useToast();
+
+  const [locations, setLocations] = useState<Location[]>([]);
+  const [selectedLocation, setSelectedLocation] = useState<string | null>(null);
+
+  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState<number | null>(
+    null
+  );
+
   const [currentMonth, setCurrentMonth] = useState<Date>(new Date());
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
+
+  const [employeeRecords, setEmployeeRecords] = useState<WorkRecord[]>([]);
+
+  // dialogs / forms
+  const [showAddForm, setShowAddForm] = useState(false);
   const [newEmployeeName, setNewEmployeeName] = useState("");
   const [newEmployeeId, setNewEmployeeId] = useState("");
-  const [showAddForm, setShowAddForm] = useState(false);
+  const [newEmployeeIdentifier, setNewEmployeeIdentifier] = useState("");
+
+  const [showAddLocationDialog, setShowAddLocationDialog] = useState(false);
+  const [newLocationName, setNewLocationName] = useState("");
+
+  const [confirmDeleteEmployee, setConfirmDeleteEmployee] =
+    useState<Employee | null>(null);
+  const [confirmDeleteLocation, setConfirmDeleteLocation] =
+    useState<Location | null>(null);
+
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [exportDateRange, setExportDateRange] = useState<DateRange | undefined>(
     undefined
   );
-  const [showAddLocationDialog, setShowAddLocationDialog] = useState(false);
-  const [newLocationName, setNewLocationName] = useState("");
-  const [locations, setLocations] = useState<Location[]>([]);
-  const [selectedLocation, setSelectedLocation] = useState<string | null>(null);
-  const { toast } = useToast();
+
+  const selectedEmployee = useMemo(() => {
+    if (selectedEmployeeId == null) return null;
+    return employees.find((e) => e.id === selectedEmployeeId) ?? null;
+  }, [employees, selectedEmployeeId]);
 
   useEffect(() => {
-    const loadData = async () => {
-      const allRecords = await getAllRecords();
-      const completed = allRecords.filter(
-        (r) => r.checkOutTime && r.workedTime
-      );
-      setRecords(completed);
-
-      const employees = await getAllEmployees();
-      setStoredEmployees(employees);
-
-      const locations = await getAllLocations();
-      setLocations(locations);
-
-      if (locations.length > 0 && !selectedLocation) {
-        setSelectedLocation(locations[0].id);
+    (async () => {
+      try {
+        const locs = await api.listLocations();
+        setLocations(locs);
+        setSelectedLocation(locs[0]?.id ?? null);
+      } catch (e: any) {
+        toast({
+          title: "Failed to load locations",
+          description: e?.message || "Request failed",
+          variant: "destructive",
+        });
       }
-    };
-    loadData();
-  }, []);
+    })();
+  }, [toast]);
 
-  // Get unique employee names (combine stored employees with those from records)
-  const employees = useMemo(() => {
-    if (!selectedLocation) return [];
-    const locationEmployees = storedEmployees.filter(
-      (e) => e.locationId === selectedLocation
-    );
-    const namesFromStored = locationEmployees.map((e) => e.name);
-    const namesFromRecords = records
-      .filter(
-        (r) =>
-          r.employeeName ===
-          locationEmployees.find((e) => e.name === r.employeeName)?.name
-      )
-      .map((r) => r.employeeName);
-    const allNames = new Set([...namesFromRecords, ...namesFromStored]);
-    return Array.from(allNames).sort();
-  }, [records, storedEmployees, selectedLocation]);
-
-  // Auto-select first employee if none selected
   useEffect(() => {
-    if (employees.length > 0) {
-      setSelectedEmployee(employees[0]);
-    } else {
-      setSelectedEmployee(null);
-    }
-  }, [selectedLocation, employees]);
-
-  const handleAddLocation = async () => {
-    const trimmedName = newLocationName.trim();
-
-    if (!trimmedName) {
-      toast({ title: "Please enter a location name", variant: "destructive" });
-      return;
-    }
-
-    if (
-      locations.some((l) => l.name.toLowerCase() === trimmedName.toLowerCase())
-    ) {
-      toast({ title: "Location already exists", variant: "destructive" });
-      return;
-    }
-
-    const newLocation: Location = {
-      id: crypto.randomUUID(),
-      name: trimmedName,
-      createdAt: new Date().toISOString(),
-    };
-
-    await saveLocation(newLocation);
-    setLocations((prev) => [...prev, newLocation]);
-    setNewLocationName("");
-    setShowAddLocationDialog(false);
-    setSelectedLocation(newLocation.id);
-    toast({ title: `Location "${trimmedName}" added` });
-  };
-
-  const handleAddEmployee = async () => {
     if (!selectedLocation) {
-      toast({
-        title: "Please select a location first",
-        variant: "destructive",
-      });
+      setEmployees([]);
+      setSelectedEmployeeId(null);
       return;
     }
 
-    const trimmedName = newEmployeeName.trim();
-    const trimmedId = newEmployeeId.trim();
+    (async () => {
+      try {
+        const emps = await api.listEmployeesByLocation(selectedLocation);
+        setEmployees(emps);
+        setSelectedEmployeeId(emps[0]?.id ?? null);
+      } catch (e: any) {
+        toast({
+          title: "Failed to load employees",
+          description: e?.message || "Request failed",
+          variant: "destructive",
+        });
+      }
+    })();
+  }, [selectedLocation, toast]);
 
-    if (!trimmedId) {
-      toast({ title: "Please enter an ID", variant: "destructive" });
+  useEffect(() => {
+    if (!selectedEmployeeId) {
+      setEmployeeRecords([]);
       return;
     }
 
-    if (!trimmedName) {
-      toast({ title: "Please enter a name", variant: "destructive" });
-      return;
-    }
+    const from = startOfWeek(startOfMonth(currentMonth), { weekStartsOn: 1 });
+    const to = endOfWeek(endOfMonth(currentMonth), { weekStartsOn: 1 });
 
-    if (employees.includes(trimmedId)) {
-      toast({ title: "Employee ID already exists", variant: "destructive" });
-      return;
-    }
+    (async () => {
+      try {
+        const items = await api.listWorkRecordsByEmployeeRange(
+          selectedEmployeeId,
+          from.getTime(),
+          to.getTime()
+        );
 
-    if (employees.includes(trimmedName)) {
-      toast({
-        title: "Employee username already exists",
-        variant: "destructive",
-      });
-      return;
-    }
+        const completed = items.filter((r) => {
+          const hasOut = !!recordEndDate(r);
+          const wt = r.workedTime ?? 0;
+          return hasOut && wt > 0;
+        });
 
-    const newEmployee: Employee = {
-      id: trimmedId,
-      name: trimmedName,
-      locationId: selectedLocation,
-      createdAt: new Date().toISOString(),
-    };
+        setEmployeeRecords(completed);
+      } catch (e: any) {
+        toast({
+          title: "Failed to load work records",
+          description: e?.message || "Request failed",
+          variant: "destructive",
+        });
+      }
+    })();
+  }, [selectedEmployeeId, currentMonth, toast]);
 
-    await saveEmployee(newEmployee);
-    setStoredEmployees((prev) => [...prev, newEmployee]);
-    setNewEmployeeName("");
-    setShowAddForm(false);
-    setSelectedEmployee(trimmedName);
-    toast({ title: `Employee "${trimmedName}" added` });
-  };
-
-  const handleExportClick = () => {
-    setExportDateRange(undefined);
-    setShowExportDialog(true);
-  };
-
-  const handleExport = () => {
-    if (!exportDateRange?.from || !exportDateRange?.to) {
-      toast({ title: "Please select a date range", variant: "destructive" });
-      return;
-    }
-
-    const { from, to } = exportDateRange;
-
-    // Build header row: Employee Name + Total Hours
-    const headers = ["Employee Name", "Total Hours"];
-
-    // Build data rows for each employee
-    const rows = employees.map((employeeName) => {
-      const empRecords = records.filter((r) => r.employeeName === employeeName);
-      const totalMinutes = empRecords
-        .filter((r) => {
-          const recordDate = new Date(r.checkInTime);
-          return isWithinInterval(recordDate, { start: from, end: to });
-        })
-        .reduce((sum, r) => sum + (r.workedTime || 0), 0);
-
-      return [employeeName, formatHours(totalMinutes)];
-    });
-
-    // Create workbook and worksheet
-    const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Working Hours");
-
-    // Download
-    const fileName = `working_hours_${format(from, "yyyyMMdd")}_${format(
-      to,
-      "yyyyMMdd"
-    )}.xlsx`;
-    XLSX.writeFile(wb, fileName);
-
-    setShowExportDialog(false);
-    toast({ title: "Export successful" });
-  };
-
-  // Get records for selected employee
-  const employeeRecords = useMemo(() => {
-    if (!selectedEmployee) return [];
-    return records.filter((r) => r.employeeName === selectedEmployee);
-  }, [records, selectedEmployee]);
-
-  // Calculate hours per day for the selected employee
   const dailyHours = useMemo(() => {
     const dayMap = new Map<string, number>();
 
     employeeRecords.forEach((record) => {
-      const dateKey = format(new Date(record.checkInTime), "yyyy-MM-dd");
-      const existing = dayMap.get(dateKey) || 0;
-      dayMap.set(dateKey, existing + (record.workedTime || 0));
+      const d = recordStartDate(record);
+      const k = format(d, "yyyy-MM-dd");
+      const prev = dayMap.get(k) || 0;
+      dayMap.set(k, prev + (record.workedTime || 0));
     });
 
     return dayMap;
   }, [employeeRecords]);
 
-  // Calculate weekly and monthly totals
+  const getHoursForDay = (date: Date): number => {
+    const dateKey = format(date, "yyyy-MM-dd");
+    return dailyHours.get(dateKey) || 0;
+  };
+
   const totals = useMemo(() => {
     const monthStart = startOfMonth(currentMonth);
     const monthEnd = endOfMonth(currentMonth);
@@ -278,7 +210,7 @@ const WorkingTime = () => {
     let totalMinutes = 0;
 
     employeeRecords.forEach((record) => {
-      const recordDate = new Date(record.checkInTime);
+      const recordDate = recordStartDate(record);
       const minutes = record.workedTime || 0;
 
       totalMinutes += minutes;
@@ -307,19 +239,244 @@ const WorkingTime = () => {
     return `${hours}h`;
   };
 
-  // Get hours for a specific day
-  const getHoursForDay = (date: Date): number => {
-    const dateKey = format(date, "yyyy-MM-dd");
-    return dailyHours.get(dateKey) || 0;
-  };
-
-  // Get records for selected date
   const selectedDateRecords = useMemo(() => {
     if (!selectedDate || !selectedEmployee) return [];
     return employeeRecords.filter((r) =>
-      isSameDay(new Date(r.checkInTime), selectedDate)
+      isSameDay(new Date(r.checkInAt), selectedDate)
     );
   }, [selectedDate, employeeRecords, selectedEmployee]);
+
+  const handleAddLocation = async () => {
+    const trimmedName = newLocationName.trim();
+
+    if (!trimmedName) {
+      toast({ title: "Please enter a location name", variant: "destructive" });
+      return;
+    }
+
+    if (
+      locations.some((l) => l.name.toLowerCase() === trimmedName.toLowerCase())
+    ) {
+      toast({ title: "Location already exists", variant: "destructive" });
+      return;
+    }
+
+    try {
+      const newLocation = await api.createLocation(trimmedName);
+      setLocations((prev) => [...prev, newLocation]);
+      setSelectedLocation(newLocation.id);
+      setNewLocationName("");
+      setShowAddLocationDialog(false);
+      toast({ title: `Location "${trimmedName}" added` });
+    } catch (e: any) {
+      toast({
+        title: "Failed to add location",
+        description: e?.message || "Request failed",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleDeleteLocation = async () => {
+    if (!confirmDeleteLocation) return;
+
+    const locID = confirmDeleteLocation.id;
+
+    try {
+      await api.deleteLocation(locID);
+
+      setLocations((prev) => prev.filter((l) => l.id !== locID));
+
+      if (selectedLocation === locID) {
+        const nextLocation = locations.find((l) => l.id !== locID) || null;
+        setSelectedLocation(nextLocation ? nextLocation.id : null);
+        setSelectedEmployeeId(null);
+      }
+
+      toast({ title: `Location "${confirmDeleteLocation.name}" deleted` });
+    } catch (e: any) {
+      toast({
+        title: "Failed to delete location",
+        description: e?.message || "Request failed",
+        variant: "destructive",
+      });
+    } finally {
+      setConfirmDeleteLocation(null);
+    }
+  };
+
+  const handleAddEmployee = async () => {
+    if (!selectedLocation) {
+      toast({
+        title: "Please select a location first",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const trimmedName = newEmployeeName.trim();
+    const trimmedId = newEmployeeId.trim();
+    const trimmedIdentifier = newEmployeeIdentifier.trim();
+
+    if (!trimmedId) {
+      toast({ title: "Please enter an ID", variant: "destructive" });
+      return;
+    }
+
+    const idNumber = parseInt(trimmedId, 10);
+    if (isNaN(idNumber) || idNumber <= 0) {
+      toast({
+        title: "Please enter a valid numeric ID",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!trimmedName) {
+      toast({ title: "Please enter a name", variant: "destructive" });
+      return;
+    }
+
+    if (!trimmedIdentifier) {
+      toast({
+        title: "Please enter an unique username",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (employees.some((e) => e.id === idNumber)) {
+      toast({ title: "Employee ID already exists", variant: "destructive" });
+      return;
+    }
+
+    if (employees.some((e) => e.identifier === trimmedIdentifier)) {
+      toast({
+        title: "Employee's username already exists",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const newEmployee = await api.createEmployee({
+        id: idNumber,
+        name: trimmedName,
+        identifier: trimmedIdentifier,
+        locationId: selectedLocation,
+      });
+      setEmployees((prev) => [...prev, newEmployee]);
+      setNewEmployeeId("");
+      setNewEmployeeIdentifier("");
+      setNewEmployeeName("");
+      setShowAddForm(false);
+      setSelectedEmployeeId(newEmployee.id);
+      toast({ title: `Employee "${trimmedName}" added` });
+    } catch (e: any) {
+      toast({
+        title: "Failed to add employee",
+        description: e?.message || "Request failed",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleDeleteEmployee = async () => {
+    if (!confirmDeleteEmployee) return;
+
+    try {
+      await api.deleteEmployee(confirmDeleteEmployee.id);
+      setEmployees((prev) =>
+        prev.filter((e) => e.id !== confirmDeleteEmployee.id)
+      );
+
+      if (selectedEmployeeId === confirmDeleteEmployee.id) {
+        const nextEmployee =
+          employees.find((e) => e.id !== confirmDeleteEmployee.id) || null;
+        setSelectedEmployeeId(nextEmployee ? nextEmployee.id : null);
+      }
+
+      toast({ title: `Employee "${confirmDeleteEmployee.name}" deleted` });
+    } catch (e: any) {
+      toast({
+        title: "Failed to delete employee",
+        description: e?.message || "Request failed",
+        variant: "destructive",
+      });
+    } finally {
+      setConfirmDeleteEmployee(null);
+    }
+  };
+
+  const handleExportClick = () => {
+    setExportDateRange(undefined);
+    setShowExportDialog(true);
+  };
+
+  const handleExport = async () => {
+    if (!selectedLocation) {
+      toast({ title: "Please select a location", variant: "destructive" });
+      return;
+    }
+
+    if (!exportDateRange?.from || !exportDateRange?.to) {
+      toast({ title: "Please select a date range", variant: "destructive" });
+      return;
+    }
+
+    const from = new Date(exportDateRange.from);
+    from.setHours(0, 0, 0, 0);
+    const to = new Date(exportDateRange.to);
+    to.setHours(23, 59, 59, 999);
+
+    try {
+      const records = await api.listWorkRecordsByLocationRange(
+        selectedLocation,
+        from.getTime(),
+        to.getTime()
+      );
+
+      const totalsByEmp = new Map<number, number>();
+      records.forEach((rec) => {
+        const minutes = rec.workedTime || 0;
+        const d = recordStartDate(rec);
+        if (!isWithinInterval(d, { start: from, end: to })) return;
+        totalsByEmp.set(
+          rec.employeeId,
+          (totalsByEmp.get(rec.employeeId) || 0) + minutes
+        );
+      });
+
+      const headers = ["Employee Name", "From Date", "To Date", "Total Hours"];
+
+      const rows = employees.map((emp) => [
+        emp.name,
+        format(from, "yyyy-MM-dd"),
+        format(to, "yyyy-MM-dd"),
+        formatHours(totalsByEmp.get(emp.id) || 0),
+      ]);
+
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Working Hours");
+
+      const fileName = `working_hours_${format(from, "yyyyMMdd")}_${format(
+        to,
+        "yyyyMMdd"
+      )}.xlsx`;
+
+      XLSX.writeFile(wb, fileName);
+
+      setShowExportDialog(false);
+      toast({ title: "Export successful" });
+    } catch (e: any) {
+      toast({
+        title: "Failed to export",
+        description: e?.message || "Request failed",
+        variant: "destructive",
+      });
+    }
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -348,19 +505,51 @@ const WorkingTime = () => {
             <PopoverContent className="w-56 p-2 bg-popover" align="end">
               <div className="space-y-1">
                 {locations.map((loc) => (
-                  <button
+                  <div
                     key={loc.id}
-                    onClick={() => setSelectedLocation(loc.id)}
                     className={cn(
-                      "w-full text-left px-3 py-2 rounded-md text-sm transition-colors",
+                      "flex items-center gap-2 rounded-md",
                       selectedLocation === loc.id
                         ? "bg-primary text-primary-foreground"
                         : "hover:bg-muted"
                     )}
                   >
-                    {loc.name}
-                  </button>
+                    {/* Select location (left side) */}
+                    <button
+                      onClick={() => setSelectedLocation(loc.id)}
+                      className="flex-1 text-left px-3 py-2 text-sm"
+                    >
+                      {loc.name}
+                    </button>
+
+                    {/* Delete location (right side) */}
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation(); // prevents selecting when clicking trash
+                        setConfirmDeleteLocation(loc); // <-- open confirm dialog
+                      }}
+                      className={cn(
+                        "p-2 rounded-md",
+                        selectedLocation === loc.id
+                          ? "hover:bg-primary/20"
+                          : "hover:bg-muted"
+                      )}
+                      aria-label={`Delete location ${loc.name}`}
+                      title="Delete location"
+                    >
+                      <Trash2
+                        className={cn(
+                          "h-4 w-4",
+                          selectedLocation === loc.id
+                            ? "text-primary-foreground/90"
+                            : "text-destructive"
+                        )}
+                      />
+                    </button>
+                  </div>
                 ))}
+
                 {locations.length === 0 && (
                   <p className="text-sm text-muted-foreground px-3 py-2">
                     No locations
@@ -383,7 +572,7 @@ const WorkingTime = () => {
             variant="outline"
             size="sm"
             onClick={handleExportClick}
-            disabled={employees.length === 0}
+            disabled={!selectedLocation || employees.length === 0}
             className="ml-auto gap-2"
           >
             <Download className="h-4 w-4" />
@@ -409,6 +598,7 @@ const WorkingTime = () => {
                     size="icon"
                     className="h-8 w-8"
                     onClick={() => setShowAddForm(!showAddForm)}
+                    disabled={!selectedLocation}
                   >
                     <UserPlus className="h-4 w-4" />
                   </Button>
@@ -424,17 +614,28 @@ const WorkingTime = () => {
                         value={newEmployeeId}
                         onChange={(e) => setNewEmployeeId(e.target.value)}
                         className="h-9"
+                        type="number"
                       />
-                      <div className="flex gap-2">
+                      <div className="flex flex-col gap-2 flex-1">
                         <Input
-                          placeholder="Employee name"
+                          placeholder="Employee fullname"
                           value={newEmployeeName}
                           onChange={(e) => setNewEmployeeName(e.target.value)}
+                          className="h-9"
+                        />
+
+                        <Input
+                          placeholder="Employee username"
+                          value={newEmployeeIdentifier}
+                          onChange={(e) =>
+                            setNewEmployeeIdentifier(e.target.value)
+                          }
                           onKeyDown={(e) =>
                             e.key === "Enter" && handleAddEmployee()
                           }
                           className="h-9"
                         />
+
                         <Button
                           size="sm"
                           onClick={handleAddEmployee}
@@ -453,40 +654,58 @@ const WorkingTime = () => {
                   </p>
                 ) : (
                   <div className="divide-y divide-border/30">
-                    {employees.map((name) => (
-                      <button
-                        key={name}
-                        onClick={() => setSelectedEmployee(name)}
-                        className={cn(
-                          "w-full text-left px-4 py-3 transition-colors hover:bg-muted/50",
-                          selectedEmployee === name &&
-                            "bg-primary/10 border-l-2 border-primary"
-                        )}
-                      >
-                        <div className="flex items-center gap-3">
-                          <div
-                            className={cn(
-                              "h-8 w-8 rounded-full flex items-center justify-center text-sm font-medium",
-                              selectedEmployee === name
-                                ? "bg-primary text-primary-foreground"
-                                : "bg-muted text-muted-foreground"
-                            )}
+                    {employees.map((emp) => {
+                      const isSelected = selectedEmployeeId === emp.id;
+                      return (
+                        <div
+                          key={emp.id}
+                          className={cn(
+                            "flex items-center justify-between px-4 py-3 transition-colors hover:bg-muted/50",
+                            isSelected &&
+                              "bg-primary/10 border-l-2 border-primary"
+                          )}
+                        >
+                          <button
+                            onClick={() => setSelectedEmployeeId(emp.id)}
+                            className="flex items-center gap-3 flex-1 text-left"
                           >
-                            {name.charAt(0).toUpperCase()}
-                          </div>
-                          <span
-                            className={cn(
-                              "font-medium",
-                              selectedEmployee === name
-                                ? "text-primary"
-                                : "text-foreground"
-                            )}
+                            <div
+                              className={cn(
+                                "h-8 w-8 rounded-full flex items-center justify-center text-sm font-medium",
+                                isSelected
+                                  ? "bg-primary text-primary-foreground"
+                                  : "bg-muted text-muted-foreground"
+                              )}
+                            >
+                              {emp.name.charAt(0).toUpperCase()}
+                            </div>
+                            <div className="flex flex-col">
+                              <span
+                                className={cn(
+                                  "font-medium",
+                                  isSelected
+                                    ? "text-primary"
+                                    : "text-foreground"
+                                )}
+                              >
+                                {emp.name}
+                              </span>
+                              <span className="text-xs text-muted-foreground"></span>
+                            </div>
+                          </button>
+
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            onClick={() => setConfirmDeleteEmployee(emp)}
+                            disabled={!emp}
                           >
-                            {name}
-                          </span>
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
                         </div>
-                      </button>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </CardContent>
@@ -502,7 +721,7 @@ const WorkingTime = () => {
                   Working Calendar
                   {selectedEmployee && (
                     <span className="text-muted-foreground font-normal">
-                      — {selectedEmployee}
+                      — {selectedEmployee.name}
                     </span>
                   )}
                 </CardTitle>
@@ -596,12 +815,12 @@ const WorkingTime = () => {
                                 >
                                   <span className="text-muted-foreground">
                                     {format(
-                                      new Date(record.checkInTime),
+                                      new Date(record.checkInAt),
                                       "HH:mm"
                                     )}{" "}
                                     -{" "}
                                     {format(
-                                      new Date(record.checkOutTime!),
+                                      new Date(record.checkOutAt!),
                                       "HH:mm"
                                     )}
                                   </span>
@@ -747,6 +966,62 @@ const WorkingTime = () => {
             >
               <Download className="h-4 w-4 mr-2" />
               Export
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm delete employee */}
+      <Dialog
+        open={!!confirmDeleteEmployee}
+        onOpenChange={(open) => !open && setConfirmDeleteEmployee(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete employee?</DialogTitle>
+            <DialogDescription>
+              This will permanently delete{" "}
+              <span className="font-medium">{confirmDeleteEmployee?.name}</span>
+              .
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmDeleteEmployee(null)}
+            >
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteEmployee}>
+              Delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Confirm delete location */}
+      <Dialog
+        open={!!confirmDeleteLocation}
+        onOpenChange={(open) => !open && setConfirmDeleteLocation(null)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Delete location?</DialogTitle>
+            <DialogDescription>
+              This will permanently delete{" "}
+              <span className="font-medium">{confirmDeleteLocation?.name}</span>{" "}
+              and remove all employees in that location.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setConfirmDeleteLocation(null)}
+            >
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteLocation}>
+              Delete
             </Button>
           </DialogFooter>
         </DialogContent>
