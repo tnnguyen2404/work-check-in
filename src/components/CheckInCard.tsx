@@ -167,7 +167,7 @@ const CheckInCard = () => {
           kind: "success",
           title: "Checked out",
           description: `${result.employee.name} checked out at ${formatTime(
-            result.checkOutAt.toString()
+            result.checkOutAt
           )} • Worked: ${formatMinutes(result.workedTime)}.`,
         });
       }
