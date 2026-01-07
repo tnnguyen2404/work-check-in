@@ -1,3 +1,4 @@
+import { get } from "http";
 
 export const API_BASE_URL = (import.meta as any).env?.VITE_API_BASE_URL ?? "";
 
@@ -107,6 +108,16 @@ export const api = {
     apiFetch<Employee[]>(
       `/employees?locationId=${encodeURIComponent(locationId)}`
     ),
+
+  listEmployeesByIdentifier: (identifier: string) =>
+    apiFetch<Employee[]>(
+      `/employees?identifier=${identifier}`
+    ),
+
+  getEmployeeById: (employeeId: number) =>
+    apiFetch<Employee>(`/employees/${employeeId}`, { method: "GET" }),
+
+
 
   createEmployee: (employee: {
     id: number;

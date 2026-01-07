@@ -239,6 +239,11 @@ const WorkingTime = () => {
     return `${hours}h`;
   };
 
+  const isNotFound = (e: any) => {
+    const msg = String(e?.message || "").toLowerCase();
+    return msg.includes("not found") || msg.includes("404");
+  };
+
   const selectedDateRecords = useMemo(() => {
     if (!selectedDate || !selectedEmployee) return [];
     return employeeRecords.filter((r) =>
@@ -345,12 +350,42 @@ const WorkingTime = () => {
       return;
     }
 
-    if (employees.some((e) => e.id === idNumber)) {
+    let existingById: any = null;
+    try {
+      existingById = await api.getEmployeeById(idNumber);
+    } catch (e: any) {
+      if (!isNotFound(e)) {
+        toast({
+          title: "Failed to validate employee ID",
+          description: e?.message || "Request failed",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
+    if (existingById) {
       toast({ title: "Employee ID already exists", variant: "destructive" });
       return;
     }
 
-    if (employees.some((e) => e.identifier === trimmedIdentifier)) {
+    let existingByIdentifier: any = null;
+    try {
+      existingByIdentifier = await api.listEmployeesByIdentifier(
+        trimmedIdentifier
+      );
+    } catch (e: any) {
+      if (!isNotFound(e)) {
+        toast({
+          title: "Failed to validate employee identifier",
+          description: e?.message || "Request failed",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
+    if (existingByIdentifier) {
       toast({
         title: "Employee's username already exists",
         variant: "destructive",
@@ -447,16 +482,28 @@ const WorkingTime = () => {
         );
       });
 
-      const headers = ["Employee Name", "From Date", "To Date", "Total Hours"];
+      const fromText = format(from, "yyyy-MM-dd");
+      const toText = format(to, "yyyy-MM-dd");
 
-      const rows = employees.map((emp) => [
-        emp.name,
-        format(from, "yyyy-MM-dd"),
-        format(to, "yyyy-MM-dd"),
-        formatHours(totalsByEmp.get(emp.id) || 0),
-      ]);
+      const aoa: (string | number)[][] = [
+        ["Working Hours Report", ""],
+        [`${fromText} - ${toText}`, ""],
+        ["Employee Name", "Total Hours"],
+        ...employees.map((emp) => [
+          emp.name,
+          formatHours(totalsByEmp.get(emp.id) || 0),
+        ]),
+      ];
 
-      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+
+      ws["!merges"] = [
+        { s: { r: 0, c: 0 }, e: { r: 0, c: 1 } },
+        { s: { r: 1, c: 0 }, e: { r: 1, c: 1 } },
+      ];
+
+      ws["!cols"] = [{ wch: 24 }, { wch: 14 }];
+
       const wb = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(wb, ws, "Working Hours");
 
@@ -690,7 +737,9 @@ const WorkingTime = () => {
                               >
                                 {emp.name}
                               </span>
-                              <span className="text-xs text-muted-foreground"></span>
+                              <span className="text-xs text-muted-foreground">
+                                {emp.identifier}
+                              </span>
                             </div>
                           </button>
 
@@ -941,15 +990,26 @@ const WorkingTime = () => {
               <Calendar
                 mode="range"
                 selected={exportDateRange}
-                onSelect={setExportDateRange}
+                onSelect={(range, selectedDay) => {
+                  setExportDateRange((prev) => {
+                    if (prev?.from && prev?.to) {
+                      if (!selectedDay) return undefined;
+                      return { from: selectedDay, to: undefined };
+                    }
+
+                    return range ?? undefined;
+                  });
+                }}
                 numberOfMonths={1}
                 className="rounded-md border pointer-events-auto"
               />
             </div>
-            {exportDateRange?.from && exportDateRange?.to && (
+            {exportDateRange?.from && (
               <p className="text-sm text-center mt-4 text-muted-foreground">
                 {format(exportDateRange.from, "MMM d, yyyy")} —{" "}
-                {format(exportDateRange.to, "MMM d, yyyy")}
+                {exportDateRange.to
+                  ? format(exportDateRange.to, "MMM d, yyyy")
+                  : "Select end date"}
               </p>
             )}
           </div>

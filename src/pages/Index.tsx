@@ -6,7 +6,7 @@ import CheckInCard from "@/components/CheckInCard";
 
 const Index = () => {
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen flex flex-col bg-background">
       {/* Header */}
       <header className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-10">
         <div className="w-full px-6 py-4 flex items-center justify-between">

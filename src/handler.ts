@@ -21,6 +21,7 @@ const EMPLOYEE_LOCATION_INDEX = process.env.EMPLOYEE_LOCATION_INDEX || "Employee
 const WORK_RECORD_LOCATION_TIME_INDEX = process.env.WORK_RECORD_LOCATION_TIME_INDEX || "WorkRecordByLocationTime";
 const WORK_RECORD_BY_EMPLOYEE_INDEX = process.env.WORK_RECORD_BY_EMPLOYEE_INDEX || "WorkRecordByEmployeeId";
 const EMPLOYEE_IDENTIFIER_INDEX = process.env.EMPLOYEE_IDENTIFIER_INDEX || "EmployeesByIdentifier";
+const WORK_RECORD_BY_LOCATION_INDEX = process.env.WORK_RECORD_BY_LOCATION_INDEX || "WorkRecordByLocationId";
 
 const COOLDOWN_MS = 60 * 1000;
 
@@ -80,7 +81,7 @@ async function resolveEmployee(inputRaw) {
   const byIdentifier = await getEmployeeByIdentifier(lower);
   if (byIdentifier) return byIdentifier;
 
-  if (/^\d+$/.test(input)) {
+  if (isDigits(input)) {
     const byId = await getEmployeeById(Number(input));
     if (byId) return byId;
   }
@@ -125,6 +126,19 @@ async function createLocation(body) {
 }
 
 async function deleteLocation(id) {
+    const emp = await getEmployeeByLocation(id);
+    const wrs = await getWorkRecordsByLocationId(id);
+
+    for (const e of emp) {
+      const employeeId = e.id;
+      await deleteEmployee(employeeId);
+    }
+
+    for (const w of wrs) {
+      const workRecordId = w.id;
+      await deleteWorkRecord(workRecordId);
+    }
+
     await ddb.send(
         new DeleteCommand({
             TableName: LOCATIONS_TABLE,
@@ -164,6 +178,8 @@ async function listLocations(limit = 500) {
 
   return items;
 }
+
+
 
 // -------------------- EMPLOYEES --------------------
 
@@ -332,6 +348,18 @@ async function getWorkRecordsByLocationRange(locationId, fromEpoch, toEpoch) {
   return q.Items || [];
 }
 
+async function getWorkRecordsByLocationId(locationId) {
+  const q = await ddb.send(
+    new QueryCommand({
+      TableName: WORK_RECORD_TABLE,
+      IndexName: WORK_RECORD_BY_LOCATION_INDEX,
+      KeyConditionExpression: "locationId = :loc",
+      ExpressionAttributeValues: { ":loc": locationId },
+    })
+  );
+  return q.Items || [];
+}
+
 async function deleteWorkRecord(id) {
   const wr = await getWorkRecordById(id);
   if (!wr) return { ok: true };
@@ -358,7 +386,7 @@ async function toggleScan(body) {
   const lastScanAt = typeof employee.lastScanAt === "number" ? employee.lastScanAt : 0;
 
   if (lastScanAt && nowMs - lastScanAt < COOLDOWN_MS) {
-    throw new Error("Please wait 2 minutes before checking in/out again.");
+    throw new Error("Please wait 1 minutes before checking in/out again.");
   }
 
   if (typeof employee.currentWorkRecordId === "string") {
@@ -528,12 +556,21 @@ export const handler = async (event) => {
     }
 
     if (method === "GET" && path === "/employees") {
-      const locationId = event.queryStringParameters?.locationId;
-      if (!locationId) {
-        return json(400, { message: "Missing locationId" });
+      const qs = event.queryStringParameters || {};
+
+      if (qs.locationId) {
+        const locationId = qs.locationId;
+        const items = await getEmployeeByLocation(locationId);
+        return json(200, items);
       }
-      const items = await getEmployeeByLocation(locationId);
-      return json(200, items);
+
+      if (qs.identifier) {
+        const identifier = qs.identifier;
+        const items = await getEmployeeByIdentifier(identifier);
+        return json(200, items);
+      }
+
+      return json(400, { message: "Provide locationId or employeeId" });
     }
 
     if (method === "POST" && path === "/employees") {
