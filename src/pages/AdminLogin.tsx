@@ -9,11 +9,11 @@ export default function AdminLogin() {
   const [error, setError] = useState("");
   const navigate = useNavigate();
 
+  const ADMIN_USERNAME = import.meta.env.VITE_ADMIN_USERNAME;
+  const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD;
+
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-
-    const ADMIN_USERNAME = "admin";
-    const ADMIN_PASSWORD = "4869";
 
     if (password === ADMIN_PASSWORD && username === ADMIN_USERNAME) {
       sessionStorage.setItem("isAdmin", "true");
