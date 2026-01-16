@@ -6,6 +6,7 @@ import Index from "./pages/Index";
 import AdminLogin from "./pages/AdminLogin";
 import AdminDashboard from "./pages/AdminDashboard";
 import NotFound from "./pages/NotFound";
+import ProtectedRoute from "@/ProtectedRoute";
 
 const queryClient = new QueryClient();
 
@@ -17,8 +18,12 @@ const App = () => (
       <Routes>
         <Route path="/" element={<Index />} />
         <Route path="/admin-login" element={<AdminLogin />} />
-        <Route path="/admin-dashboard" element={<AdminDashboard />} />
-        {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+
+        <Route element={<ProtectedRoute />}>
+          <Route path="/admin-dashboard" element={<AdminDashboard />} />
+          {/* any other admin routes go here */}
+        </Route>
+
         <Route path="*" element={<NotFound />} />
       </Routes>
     </BrowserRouter>

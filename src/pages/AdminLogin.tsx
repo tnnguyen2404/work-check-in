@@ -1,13 +1,16 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { setAdminToken } from "@/auth";
 
 export default function AdminLogin() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const navigate = useNavigate();
+  const location = useLocation();
+  const from = (location.state as any)?.from || "/admin-dashboard";
 
   const ADMIN_USERNAME = import.meta.env.VITE_ADMIN_USERNAME;
   const ADMIN_PASSWORD = import.meta.env.VITE_ADMIN_PASSWORD;
@@ -15,10 +18,19 @@ export default function AdminLogin() {
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
 
+    console.log({
+      typedUser: JSON.stringify(username),
+      typedPass: JSON.stringify(password),
+      envUser: JSON.stringify(ADMIN_USERNAME),
+      envPass: JSON.stringify(ADMIN_PASSWORD),
+    });
+
+    console.log("import.meta.env:", import.meta.env);
+
     if (password === ADMIN_PASSWORD && username === ADMIN_USERNAME) {
-      sessionStorage.setItem("isAdmin", "true");
+      setAdminToken();
       sessionStorage.setItem("username", username);
-      navigate("/admin-dashboard");
+      navigate(from, { replace: true });
     } else {
       setError("Invalid username or password");
     }
