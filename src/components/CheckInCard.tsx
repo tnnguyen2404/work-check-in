@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Clock, LogIn, CreditCard, CheckCircle } from "lucide-react";
+import { Clock, LogIn, CreditCard, CheckCircle, XCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { api } from "@/my_api/backend";
 
@@ -17,6 +17,9 @@ const CheckInCard = () => {
   const { toast } = useToast();
   const [notice, setNotice] = useState<Notice>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const successAudioRef = useRef<HTMLAudioElement | null>(null);
+  const errorAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const SCAN_MIN_LENGTH = 6;
   const SCAN_MAX_AVG_TIME_MS = 35;
@@ -43,8 +46,17 @@ const CheckInCard = () => {
     return `${hrs}h ${mins}m`;
   }
 
-  const showNotice = (n: Notice, ms = 2000) => {
+  const showNotice = (n: Notice, ms = 5000) => {
     setNotice(n);
+
+    if (n?.kind === "success") {
+      successAudioRef.current?.play().catch(() => {});
+    }
+
+    if (n?.kind === "error") {
+      errorAudioRef.current?.play().catch(() => {});
+    }
+
     window.setTimeout(() => {
       setNotice(null);
       requestAnimationFrame(() => inputRef.current?.focus());
@@ -75,7 +87,7 @@ const CheckInCard = () => {
       window.clearTimeout(scanResetTimerRef.current);
     scanResetTimerRef.current = window.setTimeout(
       resetScan,
-      SCAN_RESET_TIME_MS
+      SCAN_RESET_TIME_MS,
     );
   };
 
@@ -117,6 +129,9 @@ const CheckInCard = () => {
   };
 
   useEffect(() => {
+    successAudioRef.current = new Audio("/sounds/success.mp3");
+    errorAudioRef.current = new Audio("/sounds/error.mp3");
+
     inputRef.current?.focus();
 
     const handleClick = (event: MouseEvent) => {
@@ -138,10 +153,10 @@ const CheckInCard = () => {
     const value = (raw ?? employeeInput).trim();
 
     if (!value) {
-      toast({
+      showNotice({
+        kind: "error",
         title: "ID or Username required",
         description: "Please enter your id or username.",
-        variant: "destructive",
       });
       return;
     }
@@ -159,7 +174,7 @@ const CheckInCard = () => {
           kind: "success",
           title: "Checked in",
           description: `${result.employee.name} checked in at ${formatTime(
-            when
+            when,
           )}.`,
         });
       } else {
@@ -167,15 +182,15 @@ const CheckInCard = () => {
           kind: "success",
           title: "Checked out",
           description: `${result.employee.name} checked out at ${formatTime(
-            result.checkOutAt
+            result.checkOutAt,
           )} • Worked: ${formatMinutes(result.workedTime)}.`,
         });
       }
     } catch (e: any) {
-      toast({
+      showNotice({
+        kind: "error",
         title: "Scan failed",
         description: e?.message || "Request failed",
-        variant: "destructive",
       });
       setEmployeeInput("");
       resetScan();
@@ -201,8 +216,20 @@ const CheckInCard = () => {
         <CardContent className="pt-6">
           {notice ? (
             <div className="min-h-[220px] flex flex-col items-center justify-center text-center gap-3">
-              <CheckCircle className="h-12 w-12 text-green-600" />
-              <div className="text-3xl font-semibold">{notice.title}</div>
+              {notice.kind === "success" ? (
+                <CheckCircle className="h-12 w-12 text-green-600" />
+              ) : (
+                <XCircle className="h-12 w-12 text-red-600" />
+              )}
+
+              <div
+                className={`text-3xl font-semibold ${
+                  notice.kind === "error" ? "text-red-600" : ""
+                }`}
+              >
+                {notice.title}
+              </div>
+
               <div className="text-lg text-muted-foreground">
                 {notice.description}
               </div>

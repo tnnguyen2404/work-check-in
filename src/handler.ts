@@ -66,6 +66,16 @@ function isDigits(s) {
   return /^\d+$/.test(s);
 }
 
+function getLocalOpenDate() {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());   // "YYYY-MM-DD"
+}
+
+
 async function resolveEmployee(inputRaw) {
   const input =
     typeof inputRaw === "number"
@@ -209,6 +219,13 @@ async function createEmployee(body) {
 
 async function deleteEmployee(id) {
     const emp = await getEmployeeById(id);
+    const wrs = await getWorkRecordByEmployeeId(id);
+
+    for (const w of wrs) {
+      const workRecordId = w.id;
+      await deleteWorkRecord(workRecordId);
+    }
+    
     if (!emp) return { ok: true };
 
     await ddb.send(
@@ -312,6 +329,21 @@ async function createWorkRecord(body) {
   );
 
   return item;
+}
+
+async function getWorkRecordByEmployeeId(employeeId) {
+  const q = await ddb.send(
+    new QueryCommand({
+      TableName: WORK_RECORD_TABLE,
+      IndexName: WORK_RECORD_BY_EMPLOYEE_INDEX,
+      KeyConditionExpression: "employeeId = :eid ",
+      ExpressionAttributeValues: {
+        ":eid": employeeId,
+      },
+      ScanIndexForward: true,
+    })
+  );
+  return q.Items || [];
 }
 
 async function getWorkRecordByEmployeeRange(employeeId, fromEpoch, toEpoch) {
@@ -447,6 +479,7 @@ async function toggleScan(body) {
         identifier: employee.identifier,
         locationId: employee.locationId,
       },
+      isOpen: false,
       workRecordId,
       checkOutAt: nowMs,
       workedTime,
@@ -464,6 +497,9 @@ async function toggleScan(body) {
 
     checkInAt: nowMs,
     workedTime: null,
+
+    isOpen: true,
+    openDate: getLocalOpenDate(),
 
     synced: true,
   };
