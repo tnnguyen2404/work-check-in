@@ -14,7 +14,7 @@ import {
 const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 
 const EMPLOYEES_TABLE = process.env.EMPLOYEES_TABLE || "Employees";
-const WORK_RECORD_TABLE = process.env.WORK_RECORDS_TABLE || "WorkRecord";
+const WORK_RECORD_TABLE = process.env.WORK_RECORD_TABLE || "WorkRecord";
 const LOCATIONS_TABLE = process.env.LOCATIONS_TABLE || "Locations";
 
 const EMPLOYEE_LOCATION_INDEX = process.env.EMPLOYEE_LOCATION_INDEX || "EmployeesByLocation";
@@ -24,6 +24,7 @@ const EMPLOYEE_IDENTIFIER_INDEX = process.env.EMPLOYEE_IDENTIFIER_INDEX || "Empl
 const WORK_RECORD_BY_LOCATION_INDEX = process.env.WORK_RECORD_BY_LOCATION_INDEX || "WorkRecordByLocationId";
 
 const COOLDOWN_MS = 60 * 1000;
+const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
 
 const CORS = {
   "Access-Control-Allow-Headers":
@@ -66,15 +67,14 @@ function isDigits(s) {
   return /^\d+$/.test(s);
 }
 
-function getLocalOpenDate() {
+function getLocalOpenDate(date = new Date()) {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: "America/Los_Angeles",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).format(new Date());   // "YYYY-MM-DD"
+  }).format(date);
 }
-
 
 async function resolveEmployee(inputRaw) {
   const input =
@@ -115,6 +115,13 @@ function minutesBetween(startEpochMs, endEpochMs) {
   if (!Number.isFinite(startEpochMs) || !Number.isFinite(endEpochMs)) return 0;
   if (endEpochMs < startEpochMs) return 0;
   return Math.floor((endEpochMs - startEpochMs) / 60000);
+}
+
+function hasRecentAutoCheckout(records) {
+  const now = Date.now();
+  return records?.some(
+    (r) => r?.autoClosed === true && r?.checkOutAt && now - r.checkOutAt <= TWO_WEEKS_MS
+  );
 }
 
 // -------------------- LOCATIONS --------------------
@@ -275,6 +282,26 @@ async function getEmployeeByLocation(locationId) {
 
 // -------------------- WORK RECORDS --------------------
 
+async function listAutoClosedByLocationAndDate(locationId, openDate) {
+  const q = await ddb.send(
+    new QueryCommand({
+      TableName: WORK_RECORD_TABLE,
+      IndexName: WORK_RECORD_BY_LOCATION_INDEX,
+      KeyConditionExpression: "locationId = :loc",
+      FilterExpression:
+        "openDate = :d AND autoClosed = :t AND (attribute_not_exists(autoClosedFixed) OR autoClosedFixed = :f)",
+      ExpressionAttributeValues: {
+        ":loc": locationId,
+        ":d": openDate,
+        ":t": true,
+        ":f": false,
+      },
+    })
+  );
+  return q.Items ?? [];
+}
+
+
 async function getWorkRecordById(id) {
   const r = await ddb.send(
     new GetCommand({
@@ -318,6 +345,11 @@ async function createWorkRecord(body) {
     checkInAt,
     checkOutAt,
     workedTime,
+
+    isOpen: checkOutAt == null,              
+    openDate: getLocalOpenDate(new Date(checkInAt)), 
+    autoClosed: false,                       
+    autoClosedFixed: false,                  
   };
 
   await ddb.send(
@@ -406,6 +438,39 @@ async function deleteWorkRecord(id) {
   return { ok: true };
 }
 
+async function fixWorkRecordTimes(body) {
+  const id = requireString(body.id, "id");
+  const checkInAt = requireNumber(body.checkInAt, "checkInAt");
+  const checkOutAt = requireNumber(body.checkOutAt, "checkOutAt");
+
+  if (checkOutAt <= checkInAt) throw new Error("checkOutAt must be after checkInAt");
+
+  const workedTime = minutesBetween(checkInAt, checkOutAt);
+  const openDate = getLocalOpenDate(new Date(checkInAt));
+
+  await ddb.send(
+    new UpdateCommand({
+      TableName: WORK_RECORD_TABLE,
+      Key: { id },
+      UpdateExpression:
+        "SET checkInAt = :ci, checkOutAt = :co, workedTime = :wt, isOpen = :f, openDate = :od, fixedAt = :now, autoClosedFixed = :t",
+      ExpressionAttributeValues: {
+        ":ci": checkInAt,
+        ":co": checkOutAt,
+        ":wt": workedTime,
+        ":f": false,
+        ":od": openDate,
+        ":t": true,
+        ":now": Date.now(),
+      },
+    })
+  );
+
+  return { ok: true };
+}
+
+
+
 // -------------------- SCAN (CHECK-IN/OUT) --------------------
 
 async function toggleScan(body) {
@@ -446,12 +511,13 @@ async function toggleScan(body) {
               TableName: WORK_RECORD_TABLE,
               Key: { id:workRecordId },
               UpdateExpression:
-                "SET checkOutAt = :outAt, workedTime = :wt, synced = :syn",
+                "SET checkOutAt = :outAt, workedTime = :wt, synced = :syn, isOpen = :f",
               ConditionExpression: "attribute_not_exists(checkOutAt)",
               ExpressionAttributeValues: {
                 ":outAt": nowMs,
                 ":wt": workedTime,
                 ":syn": true,
+                ":f": false,
               },
             },
           },
@@ -511,7 +577,6 @@ async function toggleScan(body) {
           Put: {
             TableName: WORK_RECORD_TABLE,
             Item: newRecord,
-            ConditionExpression: "attribute_not_exists(id)",
           },
         },
         {
@@ -596,18 +661,41 @@ export const handler = async (event) => {
 
       if (qs.locationId) {
         const locationId = qs.locationId;
-        const items = await getEmployeeByLocation(locationId);
-        return json(200, items);
+
+        const employees = await getEmployeeByLocation(locationId);
+
+        const TWO_WEEKS_MS = 14 * 24 * 60 * 60 * 1000;
+        const from = Date.now() - TWO_WEEKS_MS;
+        const to = Date.now();
+
+        const workRecords = await getWorkRecordsByLocationRange(locationId, from, to);
+
+        const byEmployee = {}; // employeeId(string) -> workRecords[]
+        for (const wr of workRecords) {
+          const k = String(wr.employeeId);
+          if (!byEmployee[k]) byEmployee[k] = [];
+          byEmployee[k].push(wr);
+        }
+
+        const result = employees.map((emp) => ({
+          ...emp,
+          hasRecentAutoCheckout: (byEmployee[String(emp.id)] || []).some(
+  (r) => r.autoClosed === true && typeof r.checkOutAt === "number"
+),
+        }));
+
+        return json(200, result);
       }
 
       if (qs.identifier) {
         const identifier = qs.identifier;
-        const items = await getEmployeeByIdentifier(identifier);
-        return json(200, items);
+        const item = await getEmployeeByIdentifier(identifier);
+        return json(200, item ? [item] : []);
       }
 
       return json(400, { message: "Provide locationId or employeeId" });
     }
+
 
     if (method === "POST" && path === "/employees") {
       const body = parseJson(event);
@@ -666,6 +754,20 @@ export const handler = async (event) => {
       return json(400, { message: "Provide locationId or employeeId" });
     }
 
+    // GET /workrecords/auto-closed?locationId=...&openDate=YYYY-MM-DD
+    if (method === "GET" && path === "/workRecord/auto-closed") {
+      const qs = event.queryStringParameters || {};
+      const locationId = requireString(qs.locationId, "locationId");
+      const openDate = requireString(qs.openDate, "openDate");
+      const items = await listAutoClosedByLocationAndDate(locationId, openDate);
+      return json(200, { items });
+    }
+
+    if (method === "PATCH" && path === "/workRecord/fix-times") {
+      const body = JSON.parse(event.body);
+      const out = await fixWorkRecordTimes(body);
+      return json(200, out);
+    }
 
     if (method === "POST" && path === "/scan") {
       const body = parseJson(event);

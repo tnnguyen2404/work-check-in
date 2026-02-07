@@ -69,6 +69,7 @@ export type Employee = {
   username?: string;
   currentWorkRecordId?: string | null;
   lastScanAt?: number;
+  hasRecentAutoCheckout?: boolean;
 };
 
 export type WorkRecord = {
@@ -79,6 +80,11 @@ export type WorkRecord = {
   checkInAt: number;
   checkOutAt?: number | null;
   workedTime?: number | null; 
+
+  openDate?: string;           
+  isOpen?: boolean;            
+  autoClosed?: boolean;        
+  autoClosedFixed?: boolean;   
 };
 
 export type ScanResult =
@@ -133,23 +139,38 @@ export const api = {
     apiFetch<ScanResult>("/scan", { method: "POST", json: { input } }),
 
   listWorkRecordsByLocationRange: (locationId: string, from: number, to: number) => {
-  const q = new URLSearchParams({
-    locationId,
-    from: String(from),
-    to: String(to),
-  }).toString();
+    const q = new URLSearchParams({
+      locationId,
+      from: String(from),
+      to: String(to),
+    }).toString();
 
-  return apiFetch<WorkRecord[]>(`/workRecord?${q}`, { method: "GET" });
+    return apiFetch<WorkRecord[]>(`/workRecord?${q}`, { method: "GET" });
+  },
+
+  listWorkRecordsByEmployeeRange: (employeeId: number, from: number, to: number) => {
+    const q = new URLSearchParams({
+      employeeId: String(employeeId),
+      from: String(from),
+      to: String(to),
+    }).toString();
+
+    return apiFetch<WorkRecord[]>(`/workRecord?${q}`, { method: "GET" });
+  },
+
+  listAutoClosedByLocationAndDate: async (locationId: string, openDate: string) => {
+  const q = new URLSearchParams({ locationId, openDate }).toString();
+  const res = await apiFetch<{ items: WorkRecord[] }>(`/workRecord/auto-closed?${q}`, {
+    method: "GET",
+  });
+  return res.items; // ✅ return array
 },
 
-listWorkRecordsByEmployeeRange: (employeeId: number, from: number, to: number) => {
-  const q = new URLSearchParams({
-    employeeId: String(employeeId),
-    from: String(from),
-    to: String(to),
-  }).toString();
 
-  return apiFetch<WorkRecord[]>(`/workRecord?${q}`, { method: "GET" });
-},
+  fixWorkRecordTimes: (id: string, checkInAt: number, checkOutAt: number) =>
+    apiFetch<{ ok: true }>(`/workRecord/fix-times`, {
+      method: "PATCH",
+      json: { id, checkInAt, checkOutAt },
+    }),
 
 };

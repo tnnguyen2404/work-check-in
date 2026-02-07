@@ -69,6 +69,41 @@ function recordEndDate(record: WorkRecord) {
   return null;
 }
 
+// -------- Auto-checkout review helpers (last 2 weeks) --------
+const pad2 = (n: number) => String(n).padStart(2, "0");
+
+function toDatetimeLocal(ms: number) {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(
+    d.getHours(),
+  )}:${pad2(d.getMinutes())}`;
+}
+
+function fromDatetimeLocal(v: string) {
+  return new Date(v).getTime();
+}
+
+function getLocalYMDInLA(date: Date) {
+  const dtf = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  return dtf.format(date); // YYYY-MM-DD
+}
+
+function getLastNDatesLA(n: number) {
+  const out: string[] = [];
+  const now = new Date();
+  for (let i = 1; i <= n; i++) {
+    const d = new Date(now);
+    d.setDate(now.getDate() - i);
+    out.push(getLocalYMDInLA(d));
+  }
+  return out; // yesterday ... n days ago
+}
+
 const WorkingTime = () => {
   const { toast } = useToast();
 
@@ -77,7 +112,7 @@ const WorkingTime = () => {
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState<number | null>(
-    null
+    null,
   );
 
   const [currentMonth, setCurrentMonth] = useState<Date>(new Date());
@@ -101,8 +136,35 @@ const WorkingTime = () => {
 
   const [showExportDialog, setShowExportDialog] = useState(false);
   const [exportDateRange, setExportDateRange] = useState<DateRange | undefined>(
-    undefined
+    undefined,
   );
+
+  // --- Auto-checkout review (button -> dialog) ---
+  type AutoFixRow = {
+    record: WorkRecord;
+    employeeName: string;
+    openDate?: string;
+    checkInLocal: string;
+    checkOutLocal: string;
+    error: string | null;
+    dirty: boolean;
+  };
+
+  const [autoFixOpen, setAutoFixOpen] = useState(false);
+  const [autoFixRows, setAutoFixRows] = useState<AutoFixRow[]>([]);
+  const [autoFixLoading, setAutoFixLoading] = useState(false);
+  const [autoFixSaving, setAutoFixSaving] = useState(false);
+
+  const validateAutoRow = (row: AutoFixRow) => {
+    const inMs = fromDatetimeLocal(row.checkInLocal);
+    const outMs = fromDatetimeLocal(row.checkOutLocal);
+    if (!row.checkInLocal || !row.checkOutLocal)
+      return "Both times are required.";
+    if (!Number.isFinite(inMs) || !Number.isFinite(outMs))
+      return "Invalid time.";
+    if (outMs <= inMs) return "Check-out must be after check-in.";
+    return null;
+  };
 
   const selectedEmployee = useMemo(() => {
     if (selectedEmployeeId == null) return null;
@@ -161,7 +223,7 @@ const WorkingTime = () => {
         const items = await api.listWorkRecordsByEmployeeRange(
           selectedEmployeeId,
           from.getTime(),
-          to.getTime()
+          to.getTime(),
         );
 
         const completed = items.filter((r) => {
@@ -247,7 +309,7 @@ const WorkingTime = () => {
   const selectedDateRecords = useMemo(() => {
     if (!selectedDate || !selectedEmployee) return [];
     return employeeRecords.filter((r) =>
-      isSameDay(new Date(r.checkInAt), selectedDate)
+      isSameDay(new Date(r.checkInAt), selectedDate),
     );
   }, [selectedDate, employeeRecords, selectedEmployee]);
 
@@ -371,9 +433,8 @@ const WorkingTime = () => {
 
     let existingByIdentifier: any = null;
     try {
-      existingByIdentifier = await api.listEmployeesByIdentifier(
-        trimmedIdentifier
-      );
+      existingByIdentifier =
+        await api.listEmployeesByIdentifier(trimmedIdentifier);
     } catch (e: any) {
       if (!isNotFound(e)) {
         toast({
@@ -422,7 +483,7 @@ const WorkingTime = () => {
     try {
       await api.deleteEmployee(confirmDeleteEmployee.id);
       setEmployees((prev) =>
-        prev.filter((e) => e.id !== confirmDeleteEmployee.id)
+        prev.filter((e) => e.id !== confirmDeleteEmployee.id),
       );
 
       if (selectedEmployeeId === confirmDeleteEmployee.id) {
@@ -468,7 +529,7 @@ const WorkingTime = () => {
       const records = await api.listWorkRecordsByLocationRange(
         selectedLocation,
         from.getTime(),
-        to.getTime()
+        to.getTime(),
       );
 
       const totalsByEmp = new Map<number, number>();
@@ -478,7 +539,7 @@ const WorkingTime = () => {
         if (!isWithinInterval(d, { start: from, end: to })) return;
         totalsByEmp.set(
           rec.employeeId,
-          (totalsByEmp.get(rec.employeeId) || 0) + minutes
+          (totalsByEmp.get(rec.employeeId) || 0) + minutes,
         );
       });
 
@@ -509,7 +570,7 @@ const WorkingTime = () => {
 
       const fileName = `working_hours_${format(from, "yyyyMMdd")}_${format(
         to,
-        "yyyyMMdd"
+        "yyyyMMdd",
       )}.xlsx`;
 
       XLSX.writeFile(wb, fileName);
@@ -522,6 +583,166 @@ const WorkingTime = () => {
         description: e?.message || "Request failed",
         variant: "destructive",
       });
+    }
+  };
+
+  const loadAutoClosedLastTwoWeeks = async () => {
+    if (!selectedLocation) {
+      toast({ title: "Please select a location", variant: "destructive" });
+      return;
+    }
+
+    if (selectedEmployeeId == null) {
+      toast({
+        title: "Please select an employee",
+        description:
+          "Pick an employee first, then edit their check-in/out times.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      setAutoFixLoading(true);
+
+      const from = Date.now() - 14 * 24 * 60 * 60 * 1000;
+      const to = Date.now();
+
+      // ✅ Pull ALL work records in the last 2 weeks for this location
+      const all = await api.listWorkRecordsByLocationRange(
+        selectedLocation,
+        from,
+        to,
+      );
+
+      // ✅ Only show records for the selected employee
+      const filtered = (all ?? []).filter(
+        (r: any) => Number(r.employeeId) === Number(selectedEmployeeId),
+      );
+
+      if (!filtered || filtered.length === 0) {
+        toast({
+          title: "No work records for this employee",
+          description: "No records found in the last 2 weeks.",
+        });
+        setAutoFixRows([]);
+        setAutoFixOpen(false);
+        return;
+      }
+
+      const empMap = new Map<number, string>();
+      employees.forEach((e) => empMap.set(e.id, e.name));
+
+      const rows: AutoFixRow[] = filtered.map((record: any) => {
+        const checkInAt = Number(record.checkInAt);
+        const checkOutAt =
+          record.checkOutAt == null ? null : Number(record.checkOutAt);
+
+        const row: AutoFixRow = {
+          record,
+          employeeName:
+            empMap.get(record.employeeId) || record.employeeName || "Unknown",
+          openDate: record.openDate,
+          checkInLocal: Number.isFinite(checkInAt)
+            ? toDatetimeLocal(checkInAt)
+            : "",
+          checkOutLocal: Number.isFinite(checkOutAt as any)
+            ? toDatetimeLocal(checkOutAt as number)
+            : "",
+          error: null,
+          dirty: false,
+        };
+
+        row.error = validateAutoRow(row);
+        return row;
+      });
+
+      rows.sort((a, b) => {
+        const ad = a.openDate || "";
+        const bd = b.openDate || "";
+        if (ad !== bd) return bd.localeCompare(ad);
+        return (b.record.checkInAt ?? 0) - (a.record.checkInAt ?? 0);
+      });
+
+      setAutoFixRows(rows);
+      setAutoFixOpen(true);
+
+      // ✅ If everything for this employee is already fixed, remove the ❗ indicator
+      const allFixed = filtered.every((r: any) => r.autoClosedFixed === true);
+      if (allFixed) {
+        setEmployees((prev) =>
+          prev.map((e) =>
+            e.id === selectedEmployeeId
+              ? { ...e, hasRecentAutoCheckout: false }
+              : e,
+          ),
+        );
+      }
+    } catch (e: any) {
+      toast({
+        title: "Failed to load work records",
+        description: e?.message || "Request failed",
+        variant: "destructive",
+      });
+    } finally {
+      setAutoFixLoading(false);
+    }
+  };
+
+  const handleAutoRowChange = (
+    idx: number,
+    field: "checkInLocal" | "checkOutLocal",
+    value: string,
+  ) => {
+    setAutoFixRows((prev) => {
+      const copy = [...prev];
+      const row = { ...copy[idx], [field]: value, dirty: true };
+      row.error = validateAutoRow(row);
+      copy[idx] = row;
+      return copy;
+    });
+  };
+
+  const canSaveAutoFix =
+    autoFixRows.length > 0 &&
+    autoFixRows.every((r) => !r.error) &&
+    autoFixRows.some((r) => r.dirty);
+
+  const handleSaveAutoFix = async () => {
+    try {
+      setAutoFixSaving(true);
+
+      for (const row of autoFixRows) {
+        if (row.error || !row.dirty) continue;
+        const checkInAt = fromDatetimeLocal(row.checkInLocal);
+        const checkOutAt = fromDatetimeLocal(row.checkOutLocal);
+        await api.fixWorkRecordTimes(row.record.id, checkInAt, checkOutAt);
+      }
+
+      toast({ title: "Fixes saved" });
+      setAutoFixOpen(false);
+
+      // ✅ After fixes are saved, remove the ❗ indicator for this employee
+      if (selectedEmployeeId != null) {
+        setEmployees((prev) =>
+          prev.map((e) =>
+            e.id === selectedEmployeeId
+              ? { ...e, hasRecentAutoCheckout: false }
+              : e,
+          ),
+        );
+      }
+
+      // optional refresh
+      setCurrentMonth((d) => new Date(d));
+    } catch (e: any) {
+      toast({
+        title: "Failed to save fixes",
+        description: e?.message || "Request failed",
+        variant: "destructive",
+      });
+    } finally {
+      setAutoFixSaving(false);
     }
   };
 
@@ -558,7 +779,7 @@ const WorkingTime = () => {
                       "flex items-center gap-2 rounded-md",
                       selectedLocation === loc.id
                         ? "bg-primary text-primary-foreground"
-                        : "hover:bg-muted"
+                        : "hover:bg-muted",
                     )}
                   >
                     {/* Select location (left side) */}
@@ -580,7 +801,7 @@ const WorkingTime = () => {
                         "p-2 rounded-md",
                         selectedLocation === loc.id
                           ? "hover:bg-primary/20"
-                          : "hover:bg-muted"
+                          : "hover:bg-muted",
                       )}
                       aria-label={`Delete location ${loc.name}`}
                       title="Delete location"
@@ -590,7 +811,7 @@ const WorkingTime = () => {
                           "h-4 w-4",
                           selectedLocation === loc.id
                             ? "text-primary-foreground/90"
-                            : "text-destructive"
+                            : "text-destructive",
                         )}
                       />
                     </button>
@@ -618,9 +839,20 @@ const WorkingTime = () => {
           <Button
             variant="outline"
             size="sm"
+            onClick={loadAutoClosedLastTwoWeeks}
+            disabled={!selectedLocation || autoFixLoading}
+            className="ml-auto gap-2"
+          >
+            <Clock className="h-4 w-4" />
+            Edit check-in/out time
+          </Button>
+
+          <Button
+            variant="outline"
+            size="sm"
             onClick={handleExportClick}
             disabled={!selectedLocation || employees.length === 0}
-            className="ml-auto gap-2"
+            className="ml-2 gap-2"
           >
             <Download className="h-4 w-4" />
             Export Excel
@@ -709,7 +941,7 @@ const WorkingTime = () => {
                           className={cn(
                             "flex items-center justify-between px-4 py-3 transition-colors hover:bg-muted/50",
                             isSelected &&
-                              "bg-primary/10 border-l-2 border-primary"
+                              "bg-primary/10 border-l-2 border-primary",
                           )}
                         >
                           <button
@@ -721,7 +953,7 @@ const WorkingTime = () => {
                                 "h-8 w-8 rounded-full flex items-center justify-center text-sm font-medium",
                                 isSelected
                                   ? "bg-primary text-primary-foreground"
-                                  : "bg-muted text-muted-foreground"
+                                  : "bg-muted text-muted-foreground",
                               )}
                             >
                               {emp.name.charAt(0).toUpperCase()}
@@ -732,7 +964,7 @@ const WorkingTime = () => {
                                   "font-medium",
                                   isSelected
                                     ? "text-primary"
-                                    : "text-foreground"
+                                    : "text-foreground",
                                 )}
                               >
                                 {emp.name}
@@ -740,6 +972,14 @@ const WorkingTime = () => {
                               <span className="text-xs text-muted-foreground">
                                 {emp.identifier}
                               </span>
+                              {emp.hasRecentAutoCheckout && (
+                                <span
+                                  className="text-xs text-red-500 font-semibold"
+                                  title="Auto-checkout in the last 14 days"
+                                >
+                                  ❗
+                                </span>
+                              )}
                             </div>
                           </button>
 
@@ -795,7 +1035,7 @@ const WorkingTime = () => {
                             const hours = getHoursForDay(date);
                             const isCurrentMonth = isSameMonth(
                               date,
-                              currentMonth
+                              currentMonth,
                             );
                             const isToday = isSameDay(date, new Date());
                             const isSelected =
@@ -813,7 +1053,7 @@ const WorkingTime = () => {
                                   hours > 0 &&
                                     isCurrentMonth &&
                                     !isSelected &&
-                                    "hover:bg-muted/50"
+                                    "hover:bg-muted/50",
                                 )}
                               >
                                 <span
@@ -821,7 +1061,7 @@ const WorkingTime = () => {
                                     "text-sm",
                                     isToday &&
                                       "font-bold text-accent-foreground",
-                                    isSelected && "text-primary font-bold"
+                                    isSelected && "text-primary font-bold",
                                   )}
                                 >
                                   {format(date, "d")}
@@ -865,12 +1105,12 @@ const WorkingTime = () => {
                                   <span className="text-muted-foreground">
                                     {format(
                                       new Date(record.checkInAt),
-                                      "HH:mm"
+                                      "HH:mm",
                                     )}{" "}
                                     -{" "}
                                     {format(
                                       new Date(record.checkOutAt!),
-                                      "HH:mm"
+                                      "HH:mm",
                                     )}
                                   </span>
                                   <span className="font-medium text-foreground">
@@ -945,6 +1185,111 @@ const WorkingTime = () => {
           </div>
         </div>
       </main>
+
+      {/* Auto-checkout review (last 2 weeks) */}
+      <Dialog open={autoFixOpen} onOpenChange={setAutoFixOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              Edit check-in/out time
+              {selectedEmployee ? ` — ${selectedEmployee.name}` : ""}
+            </DialogTitle>
+            <DialogDescription>
+              Review employees who were auto-checked-out and adjust
+              check-in/check-out times.
+            </DialogDescription>
+          </DialogHeader>
+
+          {autoFixLoading ? (
+            <div className="py-8 text-center text-muted-foreground">
+              Loading…
+            </div>
+          ) : autoFixRows.length === 0 ? (
+            <div className="py-8 text-center text-muted-foreground">
+              No auto-checkouts found.
+            </div>
+          ) : (
+            <div className="space-y-3 max-h-[55vh] overflow-auto pr-1">
+              {autoFixRows.map((row, idx) => (
+                <div
+                  key={row.record.id}
+                  className="rounded-lg border border-border/40 p-3"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="font-medium">{row.employeeName}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {row.openDate ? `Open date: ${row.openDate}` : null}
+                    </div>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-xs text-muted-foreground">
+                        Check-in
+                      </label>
+                      <Input
+                        type="datetime-local"
+                        value={row.checkInLocal}
+                        onChange={(e) =>
+                          handleAutoRowChange(
+                            idx,
+                            "checkInLocal",
+                            e.target.value,
+                          )
+                        }
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-xs text-muted-foreground">
+                        Check-out
+                      </label>
+                      <Input
+                        type="datetime-local"
+                        value={row.checkOutLocal}
+                        onChange={(e) =>
+                          handleAutoRowChange(
+                            idx,
+                            "checkOutLocal",
+                            e.target.value,
+                          )
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  {row.error && (
+                    <div className="mt-2 text-sm text-destructive">
+                      {row.error}
+                    </div>
+                  )}
+                  {!row.error && row.dirty && (
+                    <div className="mt-2 text-xs text-muted-foreground">
+                      Edited (ready)
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            <Button
+              variant="outline"
+              onClick={() => setAutoFixOpen(false)}
+              disabled={autoFixSaving}
+            >
+              Close
+            </Button>
+            <Button
+              onClick={handleSaveAutoFix}
+              disabled={!canSaveAutoFix || autoFixSaving}
+            >
+              {autoFixSaving ? "Saving…" : "Save fixes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={showAddLocationDialog}
